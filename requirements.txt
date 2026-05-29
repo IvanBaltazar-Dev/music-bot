@@ -22,3 +22,7 @@ uvicorn==0.48.0
 # El backend funciona sin estas librerías (cae a memoria temporal).
 gspread>=6.0.0
 google-auth>=2.20.0
+
+# --- Opcional: solo si AI_ENABLED=true ---
+# El backend funciona sin esta librería (cae a reglas y menú).
+google-generativeai>=0.4.0

@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     BOT_NAME: str = "Music Bot"
     GROUP_NAME: str = "la agrupación"
 
+    # --- IA (opcional, fallback para intenciones ambiguas) ---
+    # Si AI_ENABLED=false o falta GEMINI_API_KEY, el bot funciona solo con reglas.
+    AI_ENABLED: bool = False
+    GEMINI_API_KEY: str = ""
+    AI_PROVIDER: str = "gemini"
+    AI_MODEL: str = "gemini-2.5-flash"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

@@ -1,13 +1,20 @@
 """Detección de intenciones, normalización y corrección de errores.
 
-Sin IA ni librerías pesadas: usa normalización de texto + coincidencia
-aproximada con `difflib`. Reconoce intenciones públicas, comandos de
-administrador y traduce los botones interactivos a intenciones.
+Pipeline de intenciones:
+1. Reglas + normalización
+2. Coincidencia aproximada (difflib)
+3. IA (si está habilitada, como fallback)
+4. INTENT_UNKNOWN
+
+La IA es completamente opcional: si falla o no está habilitada, el bot sigue
+con reglas y fallback a menú con botones.
 """
 
 import difflib
 import re
 import unicodedata
+
+from app.services import ai_service
 
 # --- Intenciones públicas ---
 INTENT_GREETING = "greeting"
@@ -138,13 +145,34 @@ def detect_admin_command(text: str):
 
 
 def detect_intent(text: str) -> str:
-    """Devuelve la intención pública. INTENT_UNKNOWN si no se reconoce."""
+    """Devuelve la intención pública. INTENT_UNKNOWN si no se reconoce.
+
+    Pipeline:
+    1. Reglas + normalización
+    2. Coincidencia aproximada
+    3. IA (si está habilitada)
+    4. INTENT_UNKNOWN (fallback)
+    """
     norm = normalize(text)
     if not norm:
         return INTENT_UNKNOWN
+
+    # 1. Reglas + normalización
     for intent in _INTENT_PRIORITY:
         if _matches(norm, _KEYWORDS[intent]):
             return intent
+
+    # 2. IA como fallback (si está habilitada)
+    if ai_service.is_enabled():
+        result = ai_service.classify_intent(text)
+        if result.get("success"):
+            intent = result.get("intent", INTENT_UNKNOWN)
+            confidence = result.get("confidence", 0.0)
+            # Solo confiar en IA si tiene confianza media-alta
+            if confidence >= 0.6:
+                return intent
+
+    # 3. Fallback final: INTENT_UNKNOWN
     return INTENT_UNKNOWN
 
 

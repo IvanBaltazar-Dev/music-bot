@@ -9,6 +9,7 @@ completarse el flujo.
 
 import re
 
+from app.services import ai_service
 from app.models.session import (
     Session,
     STATE_IDLE,
@@ -115,6 +116,13 @@ def _finish_quotation(session: Session):
 def _advance_quotation(session: Session, answer: str):
     answer = (answer or "").strip()
     state = session.state
+
+    # Opcionalmente, IA puede ayudar a interpretar respuestas cortas/ambiguas
+    ai_enhanced = None
+    if ai_service.is_enabled() and len(answer) < 50:
+        ai_enhanced = ai_service.validate_and_enhance_quotation(state, session.data, answer)
+        if ai_enhanced:
+            answer = ai_enhanced.get(state, answer)
 
     if state == STATE_Q_LOCATION:
         session.data["lugar"] = answer

@@ -10,6 +10,7 @@ aproximada (`difflib`), reglas y palabras clave.
 ## ✨ Funcionalidades
 
 - Detección de intenciones con corrección de errores comunes (`hla`, `ohla`, `presio`…).
+- **IA como fallback** (opcional, Gemini) para intenciones ambiguas.
 - Respuestas cálidas y botones interactivos.
 - Flujo guiado de cotización (lead) paso a paso.
 - Flujo administrativo para registrar eventos desde WhatsApp.
@@ -51,6 +52,21 @@ El bot funciona **sin Google Sheets** (usa memoria temporal). Para persistencia 
    ```
 3. Reinicia el bot
 
+### Configurar IA (Gemini, completamente opcional)
+
+El bot funciona perfectamente **sin IA**. Para mejor interpretación de mensajes ambigüos:
+
+1. Sigue los pasos en [SETUP_AI.md](SETUP_AI.md)
+2. Agrega tu API key a `.env`:
+   ```env
+   AI_ENABLED=true
+   GEMINI_API_KEY=AIza...
+   ```
+3. Instala: `pip install google-generativeai`
+4. Reinicia el bot
+
+La IA es un fallback: primero se usan reglas, luego fuzzy matching, y solo si ambos fallan se intenta IA. Si falla la API, el bot degrada gracefully a menú con botones.
+
 ## ⚙️ Variables de entorno
 
 | Variable | Obligatoria | Descripción |
@@ -65,6 +81,10 @@ El bot funciona **sin Google Sheets** (usa memoria temporal). Para persistencia 
 | `GOOGLE_APPLICATION_CREDENTIALS` | – | Ruta al JSON de la cuenta de servicio. |
 | `BOT_NAME` | – | Nombre del bot. |
 | `GROUP_NAME` | – | Nombre de la agrupación. |
+| `AI_ENABLED` | – | `true`/`false`. Activar Gemini (def. `false`). |
+| `GEMINI_API_KEY` | – | API key de Google AI Studio. |
+| `AI_PROVIDER` | – | Proveedor de IA (def. `gemini`). |
+| `AI_MODEL` | – | Modelo de Gemini (def. `gemini-2.5-flash`). |
 
 ## 🗂 Arquitectura
 
