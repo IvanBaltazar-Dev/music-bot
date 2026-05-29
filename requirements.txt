@@ -17,3 +17,8 @@ starlette==1.2.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.48.0
+
+# --- Opcional: solo si GOOGLE_SHEETS_ENABLED=true ---
+# El backend funciona sin estas librerías (cae a memoria temporal).
+gspread>=6.0.0
+google-auth>=2.20.0

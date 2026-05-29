@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, Query, HTTPException
+
 from app.config import settings
-from app.services.whatsapp_service import send_text_message
-from app.services.intent_service import get_bot_response
+from app.services.conversation_service import handle_incoming_message
 
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
@@ -12,44 +12,56 @@ async def verify_webhook(
     hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
     hub_challenge: str | None = Query(default=None, alias="hub.challenge")
 ):
-    if hub_mode == "subscribe" and hub_verify_token == settings.verify_token:
+    if hub_mode == "subscribe" and hub_verify_token == settings.VERIFY_TOKEN:
         return int(hub_challenge)
 
     raise HTTPException(status_code=403, detail="Token inválido")
 
 
+def _extract_message(body: dict):
+    """Devuelve (from_number, text, button_id) o (None, None, None) si no aplica."""
+    entry = body.get("entry", [])[0]
+    changes = entry.get("changes", [])[0]
+    value = changes.get("value", {})
+    messages = value.get("messages", [])
+
+    if not messages:
+        return None, None, None
+
+    message = messages[0]
+    from_number = message.get("from")
+    message_type = message.get("type")
+
+    if message_type == "text":
+        text = message.get("text", {}).get("body", "").strip()
+        return from_number, text, ""
+
+    if message_type == "interactive":
+        interactive = message.get("interactive", {})
+        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        return from_number, reply.get("title", ""), reply.get("id", "")
+
+    # Otros tipos (imagen, audio, etc.) no se procesan por ahora
+    return from_number, "", ""
+
+
 @router.post("")
 async def receive_message(request: Request):
-    body = await request.json()
-
-    print("Webhook recibido:")
-    print(body)
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ignored", "reason": "invalid_body"}
 
     try:
-        entry = body.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
+        from_number, text, button_id = _extract_message(body)
 
-        if not messages:
-            return {"status": "ignored", "reason": "no_messages"}
+        if not from_number or (not text and not button_id):
+            return {"status": "ignored", "reason": "no_actionable_message"}
 
-        message = messages[0]
-        from_number = message.get("from")
-        message_type = message.get("type")
-
-        if message_type == "text":
-            text = message.get("text", {}).get("body", "").strip()
-
-            response_text = get_bot_response(text)
-
-            await send_text_message(
-                to=from_number,
-                message=response_text
-            )
-
+        await handle_incoming_message(from_number, text=text, button_id=button_id)
         return {"status": "received"}
 
     except Exception as e:
+        # Nunca propagar errores: WhatsApp reintentaría el webhook.
         print("Error procesando webhook:", e)
         return {"status": "error", "detail": str(e)}
