@@ -22,12 +22,18 @@ class Settings(BaseSettings):
     BOT_NAME: str = "Music Bot"
     GROUP_NAME: str = "la agrupación"
 
-    # --- IA (opcional, fallback para intenciones ambiguas) ---
-    # Si AI_ENABLED=false o falta GEMINI_API_KEY, el bot funciona solo con reglas.
+    # --- IA / Gemini (opcional, respaldo inteligente) ---
+    # Si está deshabilitada o falta GEMINI_API_KEY, el bot funciona solo con reglas.
+    # Variables existentes (NO renombrar): AI_ENABLED, GEMINI_API_KEY, AI_PROVIDER, AI_MODEL.
     AI_ENABLED: bool = False
     GEMINI_API_KEY: str = ""
     AI_PROVIDER: str = "gemini"
     AI_MODEL: str = "gemini-2.5-flash"
+
+    # Variables nuevas (opcionales, con default seguro). Sirven de alias claros
+    # para Gemini sin romper la configuración previa. No es obligatorio definirlas.
+    GEMINI_ENABLED: bool = False
+    GEMINI_MODEL: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -44,6 +50,16 @@ class Settings(BaseSettings):
             if digits:
                 numbers.append(digits)
         return numbers
+
+    @property
+    def gemini_enabled(self) -> bool:
+        """Gemini activo solo si hay API key y está habilitado (AI_ o GEMINI_)."""
+        return bool((self.AI_ENABLED or self.GEMINI_ENABLED) and self.GEMINI_API_KEY)
+
+    @property
+    def gemini_model(self) -> str:
+        """Modelo de Gemini: GEMINI_MODEL si se definió, si no AI_MODEL."""
+        return (self.GEMINI_MODEL or self.AI_MODEL or "gemini-1.5-flash").strip()
 
 
 settings = Settings()

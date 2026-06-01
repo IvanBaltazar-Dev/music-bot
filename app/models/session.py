@@ -1,4 +1,9 @@
-"""Modelo de sesión por número de WhatsApp y constantes de estado."""
+"""Modelo de sesión por número de WhatsApp y constantes de estado.
+
+La sesión vive en memoria (rápida y suficiente para flujos cortos). El estado de
+la conversación persistente (BOT_ACTIVO / ADMIN_CONTROL) vive en la hoja
+`Conversaciones`; aquí solo se modela el avance dentro de un flujo guiado.
+"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -7,41 +12,37 @@ from typing import Any, Dict
 # --- Estado base ---
 STATE_IDLE = "idle"
 
-# --- Flujo de cotización (cliente) ---
-STATE_Q_LOCATION = "quotation_location"
-STATE_Q_DATE = "quotation_date"
-STATE_Q_EVENT_TYPE = "quotation_event_type"
-STATE_Q_DURATION = "quotation_duration"
-STATE_Q_NAME = "quotation_name"
-STATE_Q_CONTACT = "quotation_contact"
-STATE_Q_COMPLETED = "quotation_completed"
+# --- Flujo "Quiero ir a verlos" ---
+STATE_SEE_CITY = "see_city"
+STATE_SEE_INTEREST = "see_interest"
 
-# --- Flujo administrativo (registrar evento) ---
-STATE_ADMIN_EVENT_DATE = "admin_event_date"
-STATE_ADMIN_EVENT_TIME = "admin_event_time"
-STATE_ADMIN_EVENT_CITY = "admin_event_city"
-STATE_ADMIN_EVENT_PLACE = "admin_event_place"
-STATE_ADMIN_EVENT_DESCRIPTION = "admin_event_description"
+# --- Flujo "Quiero contratarlos" (3 pasos agrupados) ---
+# Paso 1: fecha + ciudad/localidad.
+# Paso 2: tipo de evento + hora aproximada.
+# Paso 3: nombre completo o DNI + preferencia de contacto.
+STATE_HIRE_STEP1 = "hire_step1"
+STATE_HIRE_STEP2 = "hire_step2"
+STATE_HIRE_STEP3 = "hire_step3"
+
+# --- Flujo administrativo: registrar evento (confirmación) ---
 STATE_ADMIN_EVENT_CONFIRM = "admin_event_confirm"
 
-QUOTATION_STATES = {
-    STATE_Q_LOCATION,
-    STATE_Q_DATE,
-    STATE_Q_EVENT_TYPE,
-    STATE_Q_DURATION,
-    STATE_Q_NAME,
-    STATE_Q_CONTACT,
-    STATE_Q_COMPLETED,
+SEE_STATES = {
+    STATE_SEE_CITY,
+    STATE_SEE_INTEREST,
+}
+
+HIRE_STATES = {
+    STATE_HIRE_STEP1,
+    STATE_HIRE_STEP2,
+    STATE_HIRE_STEP3,
 }
 
 ADMIN_EVENT_STATES = {
-    STATE_ADMIN_EVENT_DATE,
-    STATE_ADMIN_EVENT_TIME,
-    STATE_ADMIN_EVENT_CITY,
-    STATE_ADMIN_EVENT_PLACE,
-    STATE_ADMIN_EVENT_DESCRIPTION,
     STATE_ADMIN_EVENT_CONFIRM,
 }
+
+FLOW_STATES = SEE_STATES | HIRE_STATES | ADMIN_EVENT_STATES
 
 
 @dataclass
@@ -54,4 +55,4 @@ class Session:
 
     def in_flow(self) -> bool:
         """True si la sesión está dentro de un flujo guiado activo."""
-        return self.state in QUOTATION_STATES or self.state in ADMIN_EVENT_STATES
+        return self.state in FLOW_STATES

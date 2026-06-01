@@ -129,18 +129,55 @@ def is_enabled() -> bool:
 # ---------------------------------------------------------------------------
 # Eventos
 # ---------------------------------------------------------------------------
+def _format_sheet_date(value) -> str:
+    """Convierte fechas de Sheets a texto legible sin romper valores ya formateados."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    raw = str(value).strip()
+    if not raw:
+        return ""
+
+    try:
+        serial = float(raw)
+    except ValueError:
+        return raw
+
+    if serial <= 0:
+        return raw
+
+    # Google Sheets usa el mismo origen serial que Excel para fechas modernas.
+    base = datetime(1899, 12, 30, tzinfo=timezone.utc)
+    return (base + timedelta(days=serial)).date().isoformat()
+
+
+def _normalize_event_record(row: dict) -> dict:
+    record = dict(row)
+    record.setdefault("id", record.get("id_evento", ""))
+    record.setdefault("fecha", _format_sheet_date(record.get("fecha_evento", record.get("fecha", ""))))
+    record.setdefault("hora", record.get("hora_inicio", record.get("hora", "")))
+    record.setdefault("descripcion", record.get("descripcion_publica", record.get("descripcion", "")))
+    return record
+
+
+def _is_public_event(row: dict) -> bool:
+    estado = str(row.get("estado", "")).strip().upper()
+    return estado in {"ACTIVO", "CONFIRMADO"}
+
+
 def get_active_events() -> list[dict]:
     if _use_sheets:
         ws = _get_ws(SHEET_EVENTS)
         if ws is not None:
             try:
                 rows = ws.get_all_records()
-                return [r for r in rows if str(r.get("estado", "")).upper() == "ACTIVO"]
+                return [_normalize_event_record(r) for r in rows if _is_public_event(r)]
             except Exception as exc:  # noqa: BLE001
-                print(f"[sheets] error leyendo eventos: {exc.__class__.__name__}")
-                return []
+                print(f"[sheets] error leyendo eventos: {exc.__class__.__name__}. Usando memoria.")
     with _lock:
-        return [e for e in _mem_events if str(e.get("estado", "")).upper() == "ACTIVO"]
+        return [_normalize_event_record(e) for e in _mem_events if _is_public_event(e)]
 
 
 def save_event(event_data: dict) -> bool:

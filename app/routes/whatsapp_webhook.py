@@ -19,14 +19,20 @@ async def verify_webhook(
 
 
 def _extract_message(body: dict):
-    """Devuelve (from_number, text, button_id) o (None, None, None) si no aplica."""
+    """Devuelve (from_number, text, button_id, profile_name) o Nones si no aplica."""
     entry = body.get("entry", [])[0]
     changes = entry.get("changes", [])[0]
     value = changes.get("value", {})
     messages = value.get("messages", [])
 
     if not messages:
-        return None, None, None
+        return None, None, None, ""
+
+    # Nombre del perfil de WhatsApp (si viene en contacts)
+    profile_name = ""
+    contacts = value.get("contacts", [])
+    if contacts:
+        profile_name = contacts[0].get("profile", {}).get("name", "") or ""
 
     message = messages[0]
     from_number = message.get("from")
@@ -34,15 +40,15 @@ def _extract_message(body: dict):
 
     if message_type == "text":
         text = message.get("text", {}).get("body", "").strip()
-        return from_number, text, ""
+        return from_number, text, "", profile_name
 
     if message_type == "interactive":
         interactive = message.get("interactive", {})
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
-        return from_number, reply.get("title", ""), reply.get("id", "")
+        return from_number, reply.get("title", ""), reply.get("id", ""), profile_name
 
     # Otros tipos (imagen, audio, etc.) no se procesan por ahora
-    return from_number, "", ""
+    return from_number, "", "", profile_name
 
 
 @router.post("")
@@ -53,12 +59,17 @@ async def receive_message(request: Request):
         return {"status": "ignored", "reason": "invalid_body"}
 
     try:
-        from_number, text, button_id = _extract_message(body)
+        from_number, text, button_id, profile_name = _extract_message(body)
 
         if not from_number or (not text and not button_id):
             return {"status": "ignored", "reason": "no_actionable_message"}
 
-        await handle_incoming_message(from_number, text=text, button_id=button_id)
+        await handle_incoming_message(
+            from_number,
+            text=text,
+            button_id=button_id,
+            profile_name=profile_name,
+        )
         return {"status": "received"}
 
     except Exception as e:

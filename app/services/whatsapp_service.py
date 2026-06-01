@@ -84,3 +84,49 @@ async def send_button_message(to: str, body: str, buttons: list[dict]):
         # Fallback: enviar el cuerpo como texto plano para no dejar al usuario sin respuesta.
         return await send_text_message(to, body)
     return result
+
+
+async def send_list_message(
+    to: str,
+    body: str,
+    options: list[dict],
+    button_text: str = "Ver opciones",
+    header: str | None = None,
+):
+    """Envía un menú tipo lista (hasta 10 opciones).
+
+    options: lista de dicts {"id": "...", "title": "...", "description": "..."}.
+    Útil cuando hay más de 3 opciones (los botones rápidos solo permiten 3).
+    Si falla, hace fallback a botones (3) o a texto.
+    """
+    rows = []
+    for o in options[:10]:
+        row = {"id": o["id"], "title": o["title"][:24]}
+        desc = o.get("description")
+        if desc:
+            row["description"] = desc[:72]
+        rows.append(row)
+
+    interactive: dict = {
+        "type": "list",
+        "body": {"text": body},
+        "action": {
+            "button": button_text[:20],
+            "sections": [{"title": "Opciones", "rows": rows}],
+        },
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": header[:60]}
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+    result = await _post(payload)
+    if result is None:
+        # Fallback a botones (máx. 3) y, si también falla, a texto.
+        return await send_button_message(to, body, options[:3])
+    return result

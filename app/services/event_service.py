@@ -1,51 +1,150 @@
-"""Servicio de eventos de la agrupación.
+"""Servicio de Eventos.
 
-Consulta los eventos activos, formatea la respuesta para el cliente y crea
-eventos nuevos a partir del flujo administrativo. Se apoya en el repositorio,
-que ya maneja el fallback en memoria cuando Google Sheets no está disponible.
+Consulta eventos activos desde `google_sheets_repository` (hoja `Eventos`) y arma
+las respuestas públicas del flujo "Quiero ir a verlos". No inventa precios ni
+ubicaciones: si un dato no existe, simplemente no se muestra.
 """
 
-from app.repositories import google_sheets_repository as repo
+from __future__ import annotations
+
+from datetime import date, datetime
+from datetime import timedelta
+
+from app.repositories import event_repository
+from app.repositories.google_sheets_repository import get_active_events, is_enabled
+from app.services import text_utils
 
 
-def get_active_events() -> list[dict]:
-    return repo.get_active_events()
+def _parse_date(value: str):
+    """Intenta interpretar la fecha del evento en varios formatos comunes."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        serial = float(s)
+        if serial > 0:
+            return (datetime(1899, 12, 30) + timedelta(days=serial)).date()
+    except ValueError:
+        pass
+    # Tomar solo la parte de fecha si viene con hora
+    s_date = s.split("T")[0].split(" ")[0]
+    formats = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d")
+    for fmt in formats:
+        try:
+            return datetime.strptime(s_date, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
-def format_events_response() -> str:
-    """Devuelve el mensaje de eventos: lista confirmada o fallback elegante."""
+def _event_date(e: dict) -> str:
+    value = str(e.get("fecha") or e.get("fecha_evento") or "").strip()
+    parsed = _parse_date(value)
+    if parsed is not None:
+        return parsed.isoformat()
+    return value
+
+
+def _event_time(e: dict) -> str:
+    return str(e.get("hora") or e.get("hora_inicio") or "").strip()
+
+
+def _event_description(e: dict) -> str:
+    return str(e.get("descripcion") or e.get("descripcion_publica") or "").strip()
+
+
+def get_upcoming_confirmed(ciudad: str | None = None) -> list[dict]:
+    """Eventos ACTIVO desde Google Sheets, opcionalmente filtrados por ciudad."""
+    print(f"[events] google_sheets_enabled={is_enabled()}")
     events = get_active_events()
+    print(f"[events] active_events_found={len(events)}")
+
+    today = date.today()
+    ciudad_norm = text_utils.normalize(ciudad) if ciudad else ""
+
+    result = []
+    for e in events:
+        d = _parse_date(_event_date(e))
+        if d is not None and d < today:
+            continue
+        if ciudad_norm:
+            ev_city = text_utils.normalize(e.get("ciudad", ""))
+            if ciudad_norm not in ev_city and ev_city not in ciudad_norm:
+                continue
+        result.append(e)
+
+    result.sort(key=lambda e: (_parse_date(_event_date(e)) or date.max))
+    if ciudad_norm:
+        print(f"[events] active_events_found_for_city={len(result)} city={ciudad}")
+    return result
+
+
+def build_events_response() -> str:
+    events = get_upcoming_confirmed()
 
     if not events:
         return (
-            "🎤 Estamos actualizando nuestra agenda de presentaciones.\n\n"
-            "Muy pronto podrás ver aquí las próximas fechas confirmadas.\n"
-            "Gracias por tu interés en acompañarnos 🎶"
+            "Por ahora no tengo eventos activos registrados, "
+            "pero apenas tengamos una fecha confirmada la compartiremos por aquí 🎶"
         )
 
-    bloques = []
-    for e in events:
-        fecha = e.get("fecha", "Por confirmar")
-        hora = e.get("hora", "")
-        lugar = e.get("lugar", "")
-        ciudad = e.get("ciudad", "")
-        desc = e.get("descripcion", "")
+    lines = [
+        "Estos son los próximos eventos confirmados de Carlos Fer y Agrup. Cariño Lindo 🎶🙌"
+    ]
 
-        lugar_linea = ", ".join([p for p in [lugar, ciudad] if p])
-        bloque = f"📅 {fecha}" + (f" - {hora}" if hora else "")
-        if lugar_linea:
-            bloque += f"\n📍 {lugar_linea}"
-        if desc:
-            bloque += f"\n🎶 {desc}"
-        bloques.append(bloque)
+    for event in events[:5]:
+        fecha = _event_date(event)
+        hora = _event_time(event)
+        ciudad = str(event.get("ciudad", "")).strip()
+        lugar = str(event.get("lugar", "")).strip()
+        descripcion = _event_description(event)
 
-    return (
-        "🎤 Próximos eventos confirmados:\n\n"
-        + "\n\n".join(bloques)
-        + "\n\nGracias por querer acompañarnos 🙌"
+        encabezado = " - ".join(p for p in (fecha, hora) if p) or "Fecha por confirmar"
+        ubicacion = ", ".join(p for p in (ciudad, lugar) if p)
+        bloque = [f"• {encabezado}"]
+        if ubicacion:
+            bloque.append(f"  📍 {ubicacion}")
+        if descripcion:
+            bloque.append(f"  {descripcion}")
+        lines.append("\n".join(bloque))
+
+    return "\n\n".join(lines)
+
+
+def format_event_block(e: dict) -> str:
+    """Bloque de texto del evento, solo con datos realmente disponibles."""
+    fecha = _event_date(e)
+    hora = _event_time(e)
+    lugar = str(e.get("lugar", "")).strip()
+    ciudad = str(e.get("ciudad", "")).strip()
+
+    lineas = ["¡Sí tenemos fecha! 🎶🙌", ""]
+    if fecha:
+        lineas.append(f"📅 {fecha}")
+    lugar_ciudad = " — ".join([p for p in [lugar, ciudad] if p])
+    if lugar_ciudad:
+        lineas.append(f"📍 {lugar_ciudad}")
+    if hora:
+        lineas.append(f"🕘 Desde las {hora}")
+    desc = _event_description(e)
+    if desc:
+        lineas.append(f"\n{desc}")
+    lineas.append("\nVa a estar bonito para cantar, bailar y disfrutar juntos. 😄")
+    lineas.append("\n¿Qué te gustaría hacer?")
+    return "\n".join(lineas)
+
+
+def has_tickets(e: dict) -> bool:
+    return any(
+        str(e.get(k, "")).strip()
+        for k in ("entrada_precio", "entrada_descripcion", "entrada_link")
     )
 
 
-def create_event(event_data: dict) -> bool:
-    """Guarda un evento nuevo (usado por el flujo administrativo)."""
-    return repo.save_event(event_data)
+def has_maps(e: dict) -> bool:
+    return bool(str(e.get("google_maps_url", "")).strip())
+
+
+def create_event(event_data: dict) -> str:
+    """Guarda un evento nuevo (flujo administrativo). Devuelve id_evento."""
+    return event_repository.save(event_data)
