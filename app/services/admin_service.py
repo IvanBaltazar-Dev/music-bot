@@ -47,6 +47,46 @@ def _admin_label(numero: str) -> str:
     return f"{name} ({digits})" if name else digits
 
 
+def _extract_last_admin_action(observaciones: str) -> tuple[str, str]:
+    """Extrae la última acción de admin (quién y cuándo) de observaciones.
+
+    Devuelve (admin_label, fecha_hora_compacta) o ("", "") si no hay historial.
+    Ejemplo: observaciones tiene "[2026-06-01T14:30:00+00:00] admin_123 solto control"
+    Devuelve ("admin_123", "2026-06-01 14:30")
+    """
+    if not observaciones:
+        return "", ""
+
+    lines = str(observaciones).strip().split("\n")
+    if not lines:
+        return "", ""
+
+    last_line = lines[-1].strip()
+    if not last_line.startswith("["):
+        return "", ""
+
+    try:
+        # Formato: [2026-06-01T14:30:00+00:00] {admin_label} {accion}
+        end_bracket = last_line.find("]")
+        if end_bracket < 1:
+            return "", ""
+
+        timestamp_str = last_line[1:end_bracket]
+        rest = last_line[end_bracket + 1:].strip()
+
+        if not rest:
+            return "", ""
+
+        # Parsea timestamp ISO a formato compacto
+        from datetime import datetime as dt
+        iso_dt = dt.fromisoformat(timestamp_str)
+        compact_time = iso_dt.strftime("%Y-%m-%d %H:%M")
+
+        return rest, compact_time
+    except Exception:
+        return "", ""
+
+
 def _with_trace(sol: dict, message: str) -> str:
     current = str(sol.get("observaciones", "") or "").strip()
     stamp = datetime.now(timezone.utc).isoformat()
@@ -241,16 +281,6 @@ async def take_control(admin_number: str, code: str) -> str | None:
         )
         return client
 
-    assigned_admin = _only_digits(sol.get("admin_asignado", ""))
-    estado = str(sol.get("estado", "")).strip().upper()
-    if estado == hiring_repo.ESTADO_EN_CONVERSACION and assigned_admin and not _same_number(assigned_admin, admin_number):
-        await _send_admin(
-            admin_number,
-            f"No hice el cambio: la solicitud {code} ya la esta atendiendo {_admin_label(assigned_admin)}.",
-            buttons=[{"id": intent_service.view_id(code), "title": "Ver solicitud"}],
-            codigo=code,
-        )
-        return None
     return await _activate_control(admin_number, code, sol)
 
 
@@ -266,9 +296,15 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     })
     conv_repo.set_state(client, conv_repo.ADMIN_CONTROL, admin_numero=admin)
 
+    # Extrae contexto de última acción si existe
+    obs_label, obs_time = _extract_last_admin_action(sol.get("observaciones", ""))
+    context_block = ""
+    if obs_label and obs_time:
+        context_block = f"\n📋 Contexto previo:\n{obs_label} (el {obs_time})\n"
+
     await _send_admin(
         admin_number,
-        f"✅ Tomaste el control de la solicitud {code}.\n\n"
+        f"✅ Tomaste el control de la solicitud {code}.{context_block}\n"
         "Desde ahora, los mensajes que escribas aquí se enviarán directamente "
         "al cliente.\n\n"
         f"Cliente: {sol.get('nombre_o_dni', '-')}\n"
@@ -280,7 +316,9 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
         f"Horario: {sol.get('horario_evento', '-')}\n\n"
         f"Preferencia de contacto: {sol.get('observaciones', '-')}\n\n"
         "Puedes responderle cuando gustes.\n"
-        "(Escribe \"soltar control\" para devolver la conversación al bot.)",
+        "Para terminar: escribe \"cerrar solicitud\", \"marcar cotizada\" o "
+        "\"descartar solicitud\".\n"
+        "(\"soltar control\" devuelve la conversacion a cola, no la cierra.)",
         codigo=code,
     )
     await send_text_message(
@@ -292,21 +330,9 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
 
 
 async def switch_control(admin_number: str, code: str) -> str | None:
-    """Suelta la conversación actual del admin y toma la solicitud indicada."""
-    current_client = controlling_client_of(admin_number)
-    if current_client:
-        conv_repo.set_state(current_client, conv_repo.BOT_ACTIVO)
-        current_sol = hiring_repo.get_active_by_client(current_client) or hiring_repo.get_by_client(current_client)
-        if current_sol:
-            hiring_repo.update(current_sol.get("codigo_solicitud", ""), {
-                "estado": hiring_repo.ESTADO_ABIERTA,
-                "modo_atencion": "BOT",
-                "admin_asignado": "",
-            })
-
     sol = hiring_repo.get_by_code(code)
     if not sol:
-        await send_text_message(admin_number, f"No encontré la solicitud {code}.")
+        await send_text_message(admin_number, f"No encontre la solicitud {code}.")
         return None
     assigned_admin = _only_digits(sol.get("admin_asignado", ""))
     estado = str(sol.get("estado", "")).strip().upper()
@@ -317,6 +343,26 @@ async def switch_control(admin_number: str, code: str) -> str | None:
             buttons=[{"id": intent_service.view_id(code), "title": "Ver solicitud"}],
             codigo=code,
         )
+        return None
+
+    current_client = controlling_client_of(admin_number)
+    if current_client:
+        admin = _only_digits(admin_number)
+        conv_repo.set_state(current_client, conv_repo.BOT_ACTIVO)
+        current_sol = hiring_repo.get_active_by_client(current_client) or hiring_repo.get_by_client(current_client)
+        if current_sol:
+            current_code = current_sol.get("codigo_solicitud", "")
+            trace = f"{_admin_label(admin)} solto control para cambiar a otra solicitud"
+            hiring_repo.update(current_code, {
+                "estado": hiring_repo.ESTADO_ABIERTA,
+                "modo_atencion": "BOT",
+                "admin_asignado": "",
+                "observaciones": _with_trace(current_sol, trace),
+            })
+
+    sol = hiring_repo.get_by_code(code)
+    if not sol:
+        await send_text_message(admin_number, f"No encontré la solicitud {code}.")
         return None
     return await _activate_control(admin_number, code, sol)
 
@@ -391,7 +437,7 @@ async def view_request(admin_number: str, code: str) -> None:
         f"Cantidad de personas: {sol.get('cantidad_personas', '-')}\n\n"
         f"Preferencia de contacto: {sol.get('observaciones', '-')}\n\n"
         f"Estado actual: {sol.get('estado', '-')}\n"
-        f"Administrador asignado: {sol.get('admin_asignado', '-') or 'Sin asignar'}\n\n"
+        f"Administrador asignado: {_admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'}\n\n"
         "Último mensaje:\n"
         f"\"{sol.get('ultimo_mensaje_cliente', '-')}\"",
         codigo=code,
@@ -592,6 +638,7 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
 
 async def release_control(admin_number: str) -> bool:
     """El administrador devuelve la conversación al bot."""
+    admin = _only_digits(admin_number)
     client = controlling_client_of(admin_number)
     if not client:
         await send_text_message(admin_number, "No tienes ninguna conversación bajo control.")
@@ -599,10 +646,13 @@ async def release_control(admin_number: str) -> bool:
     conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
     sol = hiring_repo.get_by_client(client)
     if sol:
-        hiring_repo.update(sol.get("codigo_solicitud", ""), {
+        code = sol.get("codigo_solicitud", "")
+        trace = f"{_admin_label(admin)} solto control"
+        hiring_repo.update(code, {
             "estado": hiring_repo.ESTADO_ABIERTA,
             "modo_atencion": "BOT",
             "admin_asignado": "",
+            "observaciones": _with_trace(sol, trace),
         })
     await send_text_message(
         admin_number,
@@ -622,6 +672,9 @@ def help_text() -> str:
         "- ver solicitudes\n"
         "- métricas\n"
         "- inicializar hojas\n"
+        "- cerrar solicitud\n"
+        "- marcar cotizada\n"
+        "- descartar solicitud\n"
         "- soltar control\n"
         "- ayuda admin"
     )
@@ -646,8 +699,19 @@ def format_recent_requests() -> str:
 
     bloques = []
     for r in requests:
+        code = r.get('codigo_solicitud', '-')
+        estado = r.get('estado', '-')
+        admin_asignado = r.get('admin_asignado', '')
+
+        # Muestra quién atiende cada solicitud
+        admin_label = ""
+        if admin_asignado and estado and estado.upper() == hiring_repo.ESTADO_EN_CONVERSACION:
+            admin_label = f" [🔒 {_admin_label(admin_asignado)}]"
+        elif estado and estado.upper() == hiring_repo.ESTADO_ABIERTA:
+            admin_label = " [⏳ Disponible]"
+
         bloques.append(
-            f"🔖 {r.get('codigo_solicitud', '-')} ({r.get('estado', '-')})\n"
+            f"🔖 {code} ({estado}){admin_label}\n"
             f"👤 {r.get('nombre_o_dni', '-')} · 📞 {r.get('numero_contacto', '-')}\n"
             f"📍 {r.get('localidad', '-')} · 🎉 {r.get('tipo_evento', '-')}\n"
             f"📅 {r.get('fecha_evento', '-')} · 🕒 {r.get('horario_evento', '-')}"
