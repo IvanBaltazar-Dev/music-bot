@@ -22,7 +22,11 @@ from app.repositories import (
     message_repository as msg_repo,
 )
 from app.services import intent_service
-from app.services.whatsapp_service import send_text_message, send_button_message
+from app.services.whatsapp_service import (
+    send_text_message,
+    send_button_message,
+    send_list_message,
+)
 
 
 def _only_digits(value: str) -> str:
@@ -135,6 +139,46 @@ async def _send_admin(numero: str, texto: str, buttons=None, codigo: str = ""):
         })
     except Exception:  # noqa: BLE001
         pass
+
+
+async def _send_admin_list(numero: str, texto: str, options: list[dict],
+                           button_text: str = "Ver opciones", codigo: str = ""):
+    """Envía un menú tipo lista al admin y lo registra."""
+    await send_list_message(numero, texto, options, button_text=button_text)
+    try:
+        msg_repo.save({
+            "numero_usuario": numero,
+            "direccion": msg_repo.ADMIN_INTERNO,
+            "tipo_mensaje": "interactive",
+            "texto": texto,
+            "codigo_solicitud": codigo,
+            "admin_numero": numero,
+        })
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Menú principal de administrador
+# ---------------------------------------------------------------------------
+async def send_menu(numero: str) -> None:
+    """Menú principal con las acciones más usadas (lista desplegable)."""
+    options = [
+        {"id": intent_service.MENU_VIEW_REQUESTS, "title": "Ver solicitudes",
+         "description": "Lista de clientes y sus estados"},
+        {"id": intent_service.MENU_REGISTER_EVENT, "title": "Registrar evento",
+         "description": "Agendar una presentación"},
+        {"id": intent_service.MENU_METRICS, "title": "Métricas",
+         "description": "Resumen de la semana"},
+        {"id": intent_service.MENU_HELP, "title": "Ayuda",
+         "description": "Cómo usar el bot"},
+    ]
+    await _send_admin_list(
+        numero,
+        "🎛️ Menú de administrador\n\n¿Qué deseas hacer?",
+        options,
+        button_text="Abrir menú",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +450,25 @@ async def reply_later(admin_number: str, code: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ver solicitud
+# Etiquetas de estado (legibles para el admin)
+# ---------------------------------------------------------------------------
+_ESTADO_LABEL = {
+    hiring_repo.ESTADO_ABIERTA: "🟢 Pendiente",
+    hiring_repo.ESTADO_EN_SEGUIMIENTO: "👀 En seguimiento",
+    hiring_repo.ESTADO_TOMADA: "✋ Tomada",
+    hiring_repo.ESTADO_EN_CONVERSACION: "💬 En conversación",
+    hiring_repo.ESTADO_COTIZADA: "💰 Cotizada",
+    hiring_repo.ESTADO_CERRADA: "✅ Cerrada",
+    hiring_repo.ESTADO_DESCARTADA: "🗑️ Descartada",
+}
+
+
+def _estado_label(estado: str) -> str:
+    return _ESTADO_LABEL.get(str(estado or "").strip().upper(), estado or "-")
+
+
+# ---------------------------------------------------------------------------
+# Ver solicitud (detalle + acciones disponibles)
 # ---------------------------------------------------------------------------
 async def view_request(admin_number: str, code: str) -> None:
     sol = hiring_repo.get_by_code(code)
@@ -424,10 +486,178 @@ async def view_request(admin_number: str, code: str) -> None:
         f"👤 {cliente}\n"
         f"📞 {sol.get('numero_cliente', '-')}\n"
         f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
-        f"Estado: {estado}\n"
+        f"Estado: {_estado_label(estado)}\n"
         f"Responsable: {admin_label}",
         codigo=code,
     )
+
+    # Las solicitudes finalizadas pueden reabrirse a pendiente, no más.
+    finalizada = estado in {
+        hiring_repo.ESTADO_CERRADA,
+        hiring_repo.ESTADO_COTIZADA,
+        hiring_repo.ESTADO_DESCARTADA,
+    }
+    if finalizada:
+        options = [
+            {"id": intent_service.pending_id(code), "title": "Reabrir (pendiente)",
+             "description": "Vuelve a la cola de atención"},
+        ]
+    else:
+        options = [
+            {"id": intent_service.take_control_id(code), "title": "Ingresar a conversación",
+             "description": "Responder al cliente tú mismo"},
+            {"id": intent_service.quote_id(code), "title": "Marcar cotizada",
+             "description": "Ya se envió cotización"},
+            {"id": intent_service.close_id(code), "title": "Cerrar solicitud",
+             "description": "Caso atendido y finalizado"},
+            {"id": intent_service.discard_id(code), "title": "Descartar",
+             "description": "Cliente no interesado / no procede"},
+            {"id": intent_service.pending_id(code), "title": "Marcar pendiente",
+             "description": "Dejar en cola para después"},
+        ]
+    await _send_admin_list(
+        admin_number,
+        f"¿Qué deseas hacer con {code}?",
+        options,
+        button_text="Elegir acción",
+        codigo=code,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lista de solicitudes (navegable)
+# ---------------------------------------------------------------------------
+async def send_requests_list(admin_number: str) -> None:
+    """Envía una lista navegable de solicitudes recientes. Al elegir una,
+    el admin ve el detalle y las acciones disponibles."""
+    try:
+        requests = hiring_repo.get_recent(limit=9)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error leyendo solicitudes: {exc.__class__.__name__}")
+        requests = []
+
+    if not requests:
+        await _send_admin(
+            admin_number,
+            "📭 Por ahora no hay solicitudes registradas.\n\n"
+            "Cuando un cliente complete el flujo de contratación aparecerá aquí.",
+        )
+        return
+
+    options = []
+    for r in requests:
+        code = r.get("codigo_solicitud", "-")
+        estado = str(r.get("estado", "-")).strip().upper()
+        cliente = r.get("nombre_o_dni") or r.get("numero_cliente", "-")
+        options.append({
+            "id": intent_service.view_id(code),
+            "title": f"{code} · {cliente}"[:24],
+            "description": _estado_label(estado),
+        })
+
+    await _send_admin_list(
+        admin_number,
+        "📋 Solicitudes recientes\n\nElige una para ver el detalle y las acciones.",
+        options,
+        button_text="Ver solicitudes",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cambios de estado por código (desde el menú, con confirmación)
+# ---------------------------------------------------------------------------
+_ACTION_STATE = {
+    "close": hiring_repo.ESTADO_CERRADA,
+    "quote": hiring_repo.ESTADO_COTIZADA,
+    "discard": hiring_repo.ESTADO_DESCARTADA,
+}
+_ACTION_VERB = {
+    "close": "cerrar",
+    "quote": "marcar como cotizada",
+    "discard": "descartar",
+}
+
+
+async def confirm_action(admin_number: str, action: str, code: str) -> None:
+    """Pide confirmación antes de un cambio de estado terminal."""
+    sol = hiring_repo.get_by_code(code)
+    if not sol:
+        await send_text_message(admin_number, f"No encontré la solicitud {code}.")
+        return
+    verbo = _ACTION_VERB.get(action, "cambiar")
+    cliente = sol.get("nombre_o_dni") or sol.get("numero_cliente", "-")
+    await _send_admin(
+        admin_number,
+        f"¿Seguro que quieres {verbo} la solicitud {code}?\n\n"
+        f"👤 {cliente}",
+        buttons=[
+            {"id": intent_service.confirm_id(action, code), "title": "Sí, confirmar"},
+            {"id": intent_service.BTN_CANCEL, "title": "Cancelar"},
+        ],
+        codigo=code,
+    )
+
+
+async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict | None:
+    """Aplica un cambio de estado terminal a una solicitud por su código."""
+    final_state = _ACTION_STATE.get(action)
+    if not final_state:
+        return None
+    sol = hiring_repo.get_by_code(code)
+    if not sol:
+        await send_text_message(admin_number, f"No encontré la solicitud {code}.")
+        return None
+
+    admin = _only_digits(admin_number)
+    trace = f"{_admin_label(admin)} marcó la solicitud como {final_state}"
+    hiring_repo.update(code, {
+        "estado": final_state,
+        "modo_atencion": "CERRADO",
+        "observaciones": _with_trace(sol, trace),
+    })
+    # Si el cliente estaba bajo control, devolverlo al bot.
+    client = _only_digits(sol.get("numero_cliente", ""))
+    if client:
+        try:
+            conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+        except Exception:  # noqa: BLE001
+            pass
+
+    await _send_admin(
+        admin_number,
+        f"Listo ✅ La solicitud {code} quedó en estado {_estado_label(final_state)}.",
+        codigo=code,
+    )
+    print(f"[admin] state_by_code code={code} state={final_state} admin={admin}")
+    return {"codigo_solicitud": code, "estado": final_state, "numero_cliente": client}
+
+
+async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
+    """Devuelve una solicitud a la cola (ABIERTA / pendiente)."""
+    sol = hiring_repo.get_by_code(code)
+    if not sol:
+        await send_text_message(admin_number, f"No encontré la solicitud {code}.")
+        return None
+    admin = _only_digits(admin_number)
+    trace = f"{_admin_label(admin)} marcó la solicitud como pendiente"
+    hiring_repo.update(code, {
+        "estado": hiring_repo.ESTADO_ABIERTA,
+        "modo_atencion": "BOT",
+        "admin_asignado": "",
+        "observaciones": _with_trace(sol, trace),
+    })
+    client = _only_digits(sol.get("numero_cliente", ""))
+    if client:
+        try:
+            conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+        except Exception:  # noqa: BLE001
+            pass
+    await _send_admin(
+        admin_number,
+        f"Listo 🟢 La solicitud {code} volvió a la cola como pendiente.",
+        codigo=code,
+    )
+    return {"codigo_solicitud": code, "estado": hiring_repo.ESTADO_ABIERTA, "numero_cliente": client}
 
 
 # ---------------------------------------------------------------------------
@@ -665,13 +895,16 @@ async def release_control(admin_number: str) -> bool:
 # ---------------------------------------------------------------------------
 def help_text() -> str:
     return (
-        "📋 Comandos disponibles:\n\n"
-        "• Ver solicitudes — ver lista de pendientes\n"
-        "• Dejar control — salir de conversación actual\n"
-        "• Cerrar solicitud — marcar como finalizada\n"
-        "• Marcar cotizada — enviar cotización\n"
-        "• Descartar solicitud — cliente no interesado\n"
-        "• Métricas — ver resumen del día"
+        "🎛️ Cómo usar el bot (admin)\n\n"
+        "Escribe *menú* para ver todas las opciones con botones.\n\n"
+        "Comandos rápidos:\n"
+        "• *menú* — abre el menú principal\n"
+        "• *ver solicitudes* — lista de clientes\n"
+        "• *registrar evento* — agendar presentación\n"
+        "• *métricas* — resumen de la semana\n\n"
+        "⚠️ Cuando estés atendiendo a un cliente, todo lo que escribas le llega "
+        "a él. Para dar un comando sin enviárselo, ponle *#* delante.\n"
+        "Ejemplos: *#salir* (dejar la conversación), *#menú*, *#cerrar*."
     )
 
 
@@ -679,35 +912,5 @@ def not_authorized_text() -> str:
     return "Este comando está disponible solo para administradores autorizados."
 
 
-def format_recent_requests() -> str:
-    try:
-        requests = hiring_repo.get_recent(limit=5)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[admin] error leyendo solicitudes: {exc.__class__.__name__}")
-        requests = []
-
-    if not requests:
-        return (
-            "📭 Por ahora no hay solicitudes registradas.\n\n"
-            "Cuando un cliente complete el flujo de contratación aparecerá aquí."
-        )
-
-    bloques = []
-    for r in requests:
-        code = r.get('codigo_solicitud', '-')
-        estado = r.get('estado', '-')
-        admin_asignado = r.get('admin_asignado', '')
-
-        # Muestra quién atiende cada solicitud
-        admin_label = ""
-        if admin_asignado and estado and estado.upper() == hiring_repo.ESTADO_EN_CONVERSACION:
-            admin_label = f" [🔒 {_admin_label(admin_asignado)}]"
-        elif estado and estado.upper() == hiring_repo.ESTADO_ABIERTA:
-            admin_label = " [⏳ Disponible]"
-
-        cliente = r.get('nombre_o_dni', r.get('numero_cliente', '-'))
-        bloques.append(
-            f"🔖 {code} ({estado}){admin_label}\n"
-            f"👤 {cliente}"
-        )
-    return "📋 Últimas solicitudes:\n\n" + "\n\n".join(bloques)
+# La lista navegable de solicitudes ahora la envía `send_requests_list`
+# (mensaje interactivo). El formato de texto plano quedó obsoleto.

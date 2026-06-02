@@ -21,6 +21,8 @@ from app.models.session import (
     STATE_SEE_CITY,
     STATE_SEE_INTEREST,
     STATE_IDLE,
+    STATE_ADMIN_EVENT_COLLECT,
+    ADMIN_EVENT_STATES,
 )
 from app.repositories import (
     content_repository,
@@ -386,14 +388,41 @@ async def _finalize_flow(to: str, resp: dict):
     session_service.clear_session(to)
 
 
+async def _finalize_admin_flow(to: str, resp: dict):
+    """Procesa la respuesta del flujo de registro de evento del admin.
+
+    Puede ser: un paso intermedio (texto pidiendo datos), una cancelación,
+    o un evento completado y listo para validar y guardar.
+    """
+    if resp.get("completed") and resp.get("kind") == "admin_event":
+        data = resp.get("data", {})
+        ok, error_msg = event_service.validate_event(data)
+        if not ok:
+            # No perdemos lo recogido: volvemos a pedir el dato correcto.
+            await _send_text(
+                to,
+                f"❌ {error_msg}\n\nCorrige ese dato y te lo confirmo de nuevo. "
+                "(o escribe *#salir* para cancelar)",
+                flujo="admin",
+            )
+            session_service.set_state(to, STATE_ADMIN_EVENT_COLLECT)
+            return
+        event_id = event_service.create_event(data)
+        await _send_text(to, _admin_event_confirmation(data), flujo="admin")
+        metrics_service.log(to, "EVENTO_REGISTRADO", flujo="admin", id_evento=event_id)
+        session_service.clear_session(to)
+        return
+
+    if resp.get("text"):
+        await _send_text(to, resp["text"], flujo="admin")
+
+
 def _admin_event_confirmation(d: dict) -> str:
-    entrada = d.get("entrada_precio") or d.get("entrada_descripcion") or "-"
     return (
         "Listo 🙌 Evento registrado.\n\n"
         f"📅 {d.get('fecha_evento', '-')}\n"
         f"📍 {d.get('lugar', '-')} — {d.get('ciudad', '-')}\n"
-        f"🕘 {d.get('hora_inicio', '-')}\n"
-        f"🎟️ {entrada}\n\n"
+        f"🕘 {d.get('hora_inicio', '-')}\n\n"
         "Ya quedó guardado en agenda."
     )
 
@@ -401,54 +430,59 @@ def _admin_event_confirmation(d: dict) -> str:
 # ---------------------------------------------------------------------------
 # Comandos de administrador (texto)
 # ---------------------------------------------------------------------------
+# Acción terminal pedida por texto -> (verbo de confirmación)
+_TEXT_ACTION = {
+    intent_service.ADMIN_CLOSE_REQUEST: "close",
+    intent_service.ADMIN_MARK_QUOTED: "quote",
+    intent_service.ADMIN_DISCARD_REQUEST: "discard",
+}
+
+
 async def _handle_admin_command(to: str, command: str, text: str):
-    if command == intent_service.ADMIN_REGISTER_EVENT:
+    if command == intent_service.ADMIN_MENU:
+        await admin_service.send_menu(to)
+    elif command == intent_service.ADMIN_REGISTER_EVENT:
+        # Si el admin ya mandó datos junto al comando, los aprovechamos;
+        # si no, mostramos la plantilla y entramos en modo recolección.
         parsed = session_service.parse_admin_event(text)
         if parsed.get("ciudad") and parsed.get("fecha_evento"):
             resp = session_service.start_admin_event(to, parsed)
-            await _send_text(to, resp["text"], flujo="admin")
         else:
-            await _send_text(
-                to,
-                "Para registrar un evento, envíame así 👇\n\n"
-                "Registrar evento\n"
-                "Ciudad: Huancayo\n"
-                "Lugar: Local El Encanto\n"
-                "Fecha: 15/06/2026\n"
-                "Hora: 9 pm\n"
-                "Entrada: S/20\n"
-                "Mapa: https://maps.google.com/...",
-                flujo="admin",
-            )
+            resp = session_service.begin_admin_event(to)
+        await _send_text(to, resp["text"], flujo="admin")
     elif command == intent_service.ADMIN_VIEW_REQUESTS:
-        await _send_text(to, admin_service.format_recent_requests(), flujo="admin")
+        await admin_service.send_requests_list(to)
     elif command == intent_service.ADMIN_VIEW_METRICS:
         await _send_text(to, metrics_service.format_summary(), flujo="admin")
-    elif command == intent_service.ADMIN_CLOSE_REQUEST:
-        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_CERRADA, text)
-        if result:
-            metrics_service.log(
-                to, metrics_service.ADMIN_CERRAR_SOLICITUD,
-                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
-            )
-    elif command == intent_service.ADMIN_MARK_QUOTED:
-        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_COTIZADA, text)
-        if result:
-            metrics_service.log(
-                to, metrics_service.ADMIN_COTIZAR_SOLICITUD,
-                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
-            )
-    elif command == intent_service.ADMIN_DISCARD_REQUEST:
-        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_DESCARTADA, text)
-        if result:
-            metrics_service.log(
-                to, metrics_service.ADMIN_DESCARTAR_SOLICITUD,
-                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
-            )
+    elif command in _TEXT_ACTION:
+        # Cerrar / cotizar / descartar la solicitud que se atiende ahora.
+        action = _TEXT_ACTION[command]
+        client = admin_service.controlling_client_of(to)
+        if client:
+            sol = hiring_repo.get_active_by_client(client) or hiring_repo.get_by_client(client)
+            code = (sol or {}).get("codigo_solicitud", "")
+            if code:
+                await admin_service.confirm_action(to, action, code)
+                return
+        await _send_text(
+            to,
+            "No estás atendiendo ninguna solicitud ahora.\n"
+            "Elige una desde *ver solicitudes* 👇",
+            flujo="admin",
+        )
+        await admin_service.send_requests_list(to)
     elif command == intent_service.ADMIN_RELEASE:
         await admin_service.release_control(to)
     elif command == intent_service.ADMIN_HELP:
         await _send_text(to, admin_service.help_text(), flujo="admin")
+
+
+# Acción de botón confirmada -> (estado, métrica)
+_CONFIRM_METRIC = {
+    "close": metrics_service.ADMIN_CERRAR_SOLICITUD,
+    "quote": metrics_service.ADMIN_COTIZAR_SOLICITUD,
+    "discard": metrics_service.ADMIN_DESCARTAR_SOLICITUD,
+}
 
 
 async def _handle_admin_button(to: str, action: str, code: str):
@@ -467,6 +501,32 @@ async def _handle_admin_button(to: str, action: str, code: str):
         await admin_service.view_request(to, code)
     elif action == "reply_later":
         await admin_service.reply_later(to, code)
+    # --- Acciones de menú principal ---
+    elif action == "menu_view_requests":
+        await admin_service.send_requests_list(to)
+    elif action == "menu_register_event":
+        resp = session_service.begin_admin_event(to)
+        await _send_text(to, resp["text"], flujo="admin")
+    elif action == "menu_metrics":
+        await _send_text(to, metrics_service.format_summary(), flujo="admin")
+    elif action == "menu_help":
+        await _send_text(to, admin_service.help_text(), flujo="admin")
+    # --- Acciones sobre una solicitud (piden confirmación) ---
+    elif action in ("close", "quote", "discard"):
+        await admin_service.confirm_action(to, action, code)
+    elif action == "pending":
+        await admin_service.set_pending_by_code(to, code)
+    # --- Confirmaciones ---
+    elif action in ("confirm_close", "confirm_quote", "confirm_discard"):
+        verb = action.replace("confirm_", "")
+        result = await admin_service.apply_state_by_code(to, verb, code)
+        if result:
+            metrics_service.log(
+                to, _CONFIRM_METRIC.get(verb, ""),
+                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
+            )
+    elif action == "cancel":
+        await _send_text(to, "Listo, no cambié nada 👍", flujo="admin")
 
 
 # ---------------------------------------------------------------------------
@@ -666,26 +726,50 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
             if parsed:
                 await _handle_admin_button(from_number, parsed[0], parsed[1])
             else:
-                await _send_text(
-                    from_number,
-                    "Ese botón no corresponde a una acción de administrador.\n\n"
-                    + admin_service.help_text(),
-                    flujo="admin",
-                )
+                await admin_service.send_menu(from_number)
             return
 
         if text:
-            command = intent_service.detect_admin_command(text)
-            if command:
-                await _handle_admin_command(from_number, command, text)
-                return
-
+            is_hash = intent_service.is_hash_command(text)
             cliente = admin_service.controlling_client_of(from_number)
-            if cliente:
+
+            # En conversación con un cliente: el texto normal SIEMPRE se le
+            # reenvía. Para dar un comando, el admin antepone '#'.
+            if cliente and not is_hash:
                 await admin_service.relay_admin_to_client(from_number, cliente, text)
                 return
 
-        await _send_text(from_number, admin_service.help_text(), flujo="admin")
+            command_text = intent_service.strip_hash(text) if is_hash else text
+
+            # Flujo de registro de evento en curso (recoger/confirmar datos).
+            admin_session = session_service.get_session(from_number)
+            if admin_session.state in ADMIN_EVENT_STATES:
+                if is_hash:
+                    # '#' cancela el registro y libera para ejecutar el comando.
+                    session_service.clear_session(from_number)
+                else:
+                    resp = session_service.handle_flow(admin_session, text)
+                    await _finalize_admin_flow(from_number, resp)
+                    return
+
+            command = intent_service.detect_admin_command(command_text)
+            if command:
+                await _handle_admin_command(from_number, command, command_text)
+                return
+
+            # '#' sin comando reconocido: salir del control si lo hay, y menú.
+            if is_hash:
+                if cliente:
+                    await admin_service.release_control(from_number)
+                else:
+                    await admin_service.send_menu(from_number)
+                return
+
+            # Texto suelto sin contexto: mostrar el menú.
+            await admin_service.send_menu(from_number)
+            return
+
+        await admin_service.send_menu(from_number)
         return
 
     # 2) Cliente bajo control de un administrador: no responde el bot

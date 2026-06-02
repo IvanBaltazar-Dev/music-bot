@@ -6,7 +6,7 @@ para administradores. Nunca rompe el flujo del webhook: cualquier fallo se ignor
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.repositories import metrics_repository
 
@@ -73,49 +73,66 @@ def _parse(dt_str: str):
         return None
 
 
-def format_summary() -> str:
-    """Resumen operativo con KPIs para administradores."""
+def format_summary(dias: int = 7) -> str:
+    """Resumen operativo con KPIs para administradores (últimos `dias` días)."""
     try:
         metrics = metrics_repository.get_all()
     except Exception as exc:  # noqa: BLE001
         print(f"[metrics] no se pudo leer el resumen: {exc.__class__.__name__}")
         metrics = []
 
-    today = date.today()
-    today_rows = [m for m in metrics if (_parse(m.get("fecha_hora", "")) or datetime.min.replace(tzinfo=timezone.utc)).date() == today]
+    desde = date.today() - timedelta(days=dias - 1)
 
-    def _count(rows, intent):
+    def _in_range(row) -> bool:
+        d = _parse(row.get("fecha_hora", ""))
+        return d is not None and d.date() >= desde
+
+    rows = [m for m in metrics if _in_range(m)]
+
+    # Si no hay nada en el rango, muéstralo claramente (en vez de puros ceros
+    # que parecen un error).
+    if not rows:
+        return (
+            "📊 Music Bot — últimos 7 días\n\n"
+            "Todavía no hay actividad registrada en este periodo.\n\n"
+            "Cuando los clientes empiecen a escribir, aquí verás usuarios, "
+            "conversiones y cierres."
+        )
+
+    def _count(intent):
         return sum(1 for r in rows if r.get("intencion_detectada") == intent)
 
-    usuarios_hoy = len({r.get("numero_usuario") for r in today_rows if r.get("numero_usuario")})
-    saludos = _count(today_rows, GREETING)
-    contratos = _count(today_rows, QUIERO_CONTRATAR)
-    no_reconocidos = _count(today_rows, UNKNOWN)
-    cerradas = _count(today_rows, ADMIN_CERRAR_SOLICITUD)
-    cotizadas = _count(today_rows, ADMIN_COTIZAR_SOLICITUD)
-    descartadas = _count(today_rows, ADMIN_DESCARTAR_SOLICITUD)
+    usuarios = len({r.get("numero_usuario") for r in rows if r.get("numero_usuario")})
+    saludos = _count(GREETING)
+    contratos = _count(QUIERO_CONTRATAR)
+    no_reconocidos = _count(UNKNOWN)
+    cerradas = _count(ADMIN_CERRAR_SOLICITUD)
+    cotizadas = _count(ADMIN_COTIZAR_SOLICITUD)
+    descartadas = _count(ADMIN_DESCARTAR_SOLICITUD)
 
-    # Cálculo de KPIs
-    tasa_conversion = f"{int(100 * contratos / saludos)}%" if saludos > 0 else "0%"
-    tasa_cierre = f"{int(100 * cerradas / (cerradas + cotizadas))}%" if (cerradas + cotizadas) > 0 else "0%"
-    tasa_abandono = f"{int(100 * no_reconocidos / saludos)}%" if saludos > 0 else "0%"
+    # Base de conversión: usar saludos si existen; si no, usuarios únicos.
+    base = saludos if saludos > 0 else usuarios
+    atendidas = cerradas + cotizadas
+    tasa_conversion = f"{int(100 * contratos / base)}%" if base > 0 else "—"
+    tasa_cierre = f"{int(100 * cerradas / atendidas)}%" if atendidas > 0 else "—"
+    tasa_abandono = f"{int(100 * no_reconocidos / base)}%" if base > 0 else "—"
 
     lineas = [
-        "📊 Resumen de Music Bot (hoy)\n",
-        f"👥 Usuarios: {usuarios_hoy}",
+        "📊 Music Bot — últimos 7 días\n",
+        f"👥 Usuarios: {usuarios}",
         f"👋 Saludos: {saludos}",
-        f"🎤 Ver eventos: {_count(today_rows, QUIERO_IR_A_VERLOS)}",
+        f"🎤 Ver eventos: {_count(QUIERO_IR_A_VERLOS)}",
         f"🤝 Contratar: {contratos}",
-        f"🎶 Conocer: {_count(today_rows, CONOCE_AGRUPACION)}",
-        f"📩 Intereses: {_count(today_rows, INTERES_LOCALIDAD)}",
+        f"🎶 Conocer: {_count(CONOCE_AGRUPACION)}",
+        f"📩 Intereses: {_count(INTERES_LOCALIDAD)}",
         f"❓ No reconocidos: {no_reconocidos}",
         "",
         "📈 KPIs:",
-        f"  • Conversión: {tasa_conversion} (contratos/saludos)",
+        f"  • Conversión: {tasa_conversion} (contratos/contactos)",
         f"  • Cierre: {tasa_cierre} (cerradas/atendidas)",
-        f"  • Abandono: {tasa_abandono} (no reconocidos/saludos)",
+        f"  • Abandono: {tasa_abandono} (no reconocidos/contactos)",
         "",
-        "🎯 Admin:",
+        "🎯 Gestión:",
         f"  • Cerradas: {cerradas}",
         f"  • Cotizadas: {cotizadas}",
         f"  • Descartadas: {descartadas}",

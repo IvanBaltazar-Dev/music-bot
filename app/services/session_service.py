@@ -22,6 +22,7 @@ from app.models.session import (
     STATE_HIRE_STEP1,
     STATE_HIRE_STEP2,
     STATE_HIRE_STEP3,
+    STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_CONFIRM,
     HIRE_STATES,
     ADMIN_EVENT_STATES,
@@ -607,31 +608,35 @@ def _parse_name_contact(answer: str, own_whatsapp: str) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 # Flujo administrativo: registrar evento
 # ---------------------------------------------------------------------------
+# Solo campos que existen en el esquema actual de la hoja Eventos.
 _ADMIN_FIELD_MAP = {
     "ciudad": "ciudad",
-    "provincia": "provincia",
-    "region": "region",
-    "región": "region",
     "lugar": "lugar",
     "local": "lugar",
-    "direccion": "direccion",
-    "dirección": "direccion",
     "fecha": "fecha_evento",
     "hora": "hora_inicio",
     "horario": "hora_inicio",
-    "entrada": "entrada_descripcion",
-    "precio": "entrada_precio",
+    "hora inicio": "hora_inicio",
+    "hora fin": "hora_fin",
     "mapa": "google_maps_url",
     "maps": "google_maps_url",
-    "descripcion": "descripcion_publica",
-    "descripción": "descripcion_publica",
+    "ubicacion": "google_maps_url",
+    "ubicación": "google_maps_url",
 }
 
 
+_DATE_RE = re.compile(r"\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\b")
+_URL_RE = re.compile(r"https?://\S+")
+_TIME_RE = re.compile(r"\b(\d{1,2}([:.]\d{2})?\s*(am|pm|a\.m\.|p\.m\.|hrs|h)?)\b", re.IGNORECASE)
+
+
 def parse_admin_event(text: str) -> dict:
-    """Extrae los campos del registro de evento desde líneas 'Campo: valor'."""
+    """Extrae los campos del evento. Tolerante: primero busca líneas
+    'Campo: valor' y luego intenta deducir fecha y enlace del texto libre."""
     data: dict = {}
-    for line in (text or "").splitlines():
+    raw = text or ""
+
+    for line in raw.splitlines():
         if ":" not in line:
             continue
         label, _, value = line.partition(":")
@@ -642,11 +647,78 @@ def parse_admin_event(text: str) -> dict:
         field = _ADMIN_FIELD_MAP.get(key)
         if field:
             data[field] = value
+
+    # Deducciones del texto libre (solo si faltan).
+    if not data.get("google_maps_url"):
+        m = _URL_RE.search(raw)
+        if m:
+            data["google_maps_url"] = m.group(0).strip().rstrip(".,)")
+    if not data.get("fecha_evento"):
+        m = _DATE_RE.search(raw)
+        if m:
+            data["fecha_evento"] = m.group(1)
+
     return data
 
 
+def missing_event_fields(d: dict) -> list[str]:
+    """Campos mínimos que faltan para poder guardar (ciudad y fecha)."""
+    faltan = []
+    if not d.get("ciudad"):
+        faltan.append("ciudad")
+    if not d.get("fecha_evento"):
+        faltan.append("fecha")
+    return faltan
+
+
+def admin_event_template() -> str:
+    return (
+        "📝 Registrar evento\n\n"
+        "Cópialo y complétalo (puedes omitir lo que no tengas):\n\n"
+        "Ciudad: \n"
+        "Lugar: \n"
+        "Fecha: 15/06/2026\n"
+        "Hora: 9 pm\n"
+        "Mapa: https://maps.google.com/...\n\n"
+        "Mínimo necesito *ciudad* y *fecha*. Escribe *#salir* para cancelar."
+    )
+
+
+def begin_admin_event(number: str):
+    """Inicia el flujo de registro de evento mostrando la plantilla."""
+    session = get_session(number)
+    session.data = {"creado_por": number}
+    _touch(session, STATE_ADMIN_EVENT_COLLECT)
+    return _resp(admin_event_template())
+
+
+def collect_admin_event(number: str, text: str):
+    """Recibe los datos del evento, los acumula y pide confirmación o lo
+    que falte. Nunca falla por formato libre."""
+    session = get_session(number)
+    parsed = parse_admin_event(text)
+    # Acumula sobre lo ya recogido (permite completarlo en varios mensajes).
+    for k, v in parsed.items():
+        if v:
+            session.data[k] = v
+
+    faltan = missing_event_fields(session.data)
+    if faltan:
+        _touch(session, STATE_ADMIN_EVENT_COLLECT)
+        falta_txt = " y ".join(faltan)
+        return _resp(
+            f"Me falta {falta_txt} para agendar el evento.\n\n"
+            "Mándamelo así, por ejemplo:\n"
+            f"{'Ciudad: Huancayo' if 'ciudad' in faltan else 'Fecha: 15/06/2026'}\n\n"
+            "O escribe *#salir* para cancelar."
+        )
+
+    _touch(session, STATE_ADMIN_EVENT_CONFIRM)
+    return _resp(admin_event_summary(session.data))
+
+
 def start_admin_event(number: str, parsed: dict):
-    """Prepara la confirmación del evento parseado."""
+    """Compatibilidad: prepara la confirmación con datos ya parseados."""
     session = get_session(number)
     session.data = dict(parsed)
     session.data["creado_por"] = number
@@ -655,30 +727,43 @@ def start_admin_event(number: str, parsed: dict):
 
 
 def admin_event_summary(d: dict) -> str:
-    entrada = d.get("entrada_precio") or d.get("entrada_descripcion") or "-"
     return (
         "Revisa el evento antes de guardar 👇\n\n"
         f"📅 Fecha: {d.get('fecha_evento', '-')}\n"
         f"🕒 Hora: {d.get('hora_inicio', '-')}\n"
         f"📍 Lugar: {d.get('lugar', '-')} — {d.get('ciudad', '-')}\n"
-        f"🎟️ Entrada: {entrada}\n"
         f"🗺️ Mapa: {d.get('google_maps_url', '-')}\n\n"
-        "Escribe *confirmar* para guardar o *cancelar* para descartar."
+        "¿Confirmas? Responde *sí* para guardar o *no* para cancelar."
     )
+
+
+_NEGATIVE = {"no", "cancelar", "cancela", "descartar", "nel", "negativo"}
 
 
 def _advance_admin_event(session: Session, answer: str):
     norm = text_utils.normalize(answer)
+
+    # En la fase de recolección, todo texto se interpreta como datos.
+    if session.state == STATE_ADMIN_EVENT_COLLECT:
+        return collect_admin_event(session.whatsapp, answer)
+
+    # Fase de confirmación.
     if norm in _AFFIRMATIVE:
         data = dict(session.data)
         data.setdefault("estado", "CONFIRMADO")
         _touch(session, STATE_IDLE)
         return _resp("", completed=True, kind="admin_event", data=data)
-    clear_session(session.whatsapp)
+    if norm in _NEGATIVE:
+        clear_session(session.whatsapp)
+        return _resp(
+            "Listo, descarté el registro del evento 😊\n"
+            "Escribe *registrar evento* cuando quieras intentarlo de nuevo.",
+            cancelled=True,
+        )
+    # Respuesta ambigua: vuelve a pedir confirmación clara.
     return _resp(
-        "Listo, descarté el registro del evento 😊\n"
-        "Escribe “registrar evento” cuando quieras intentarlo de nuevo.",
-        cancelled=True,
+        "No te entendí 🤔 Responde *sí* para guardar el evento o *no* para "
+        "cancelar."
     )
 
 

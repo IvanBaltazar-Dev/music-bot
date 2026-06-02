@@ -24,7 +24,9 @@ STATE_HIRE_STEP1 = "hire_step1"
 STATE_HIRE_STEP2 = "hire_step2"
 STATE_HIRE_STEP3 = "hire_step3"
 
-# --- Flujo administrativo: registrar evento (confirmación) ---
+# --- Flujo administrativo: registrar evento ---
+# Paso 1: recoger datos (plantilla). Paso 2: confirmar antes de guardar.
+STATE_ADMIN_EVENT_COLLECT = "admin_event_collect"
 STATE_ADMIN_EVENT_CONFIRM = "admin_event_confirm"
 
 SEE_STATES = {
@@ -39,6 +41,7 @@ HIRE_STATES = {
 }
 
 ADMIN_EVENT_STATES = {
+    STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_CONFIRM,
 }
 
