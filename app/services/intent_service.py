@@ -157,7 +157,7 @@ def detect_admin_command(text: str):
         return None
     for command in (
         ADMIN_REGISTER_EVENT, ADMIN_VIEW_REQUESTS, ADMIN_VIEW_METRICS,
-        ADMIN_INIT_SHEETS, ADMIN_CLOSE_REQUEST, ADMIN_MARK_QUOTED,
+        ADMIN_CLOSE_REQUEST, ADMIN_MARK_QUOTED,
         ADMIN_DISCARD_REQUEST, ADMIN_RELEASE, ADMIN_HELP,
     ):
         if _matches(norm, _ADMIN_KEYWORDS[command]):
