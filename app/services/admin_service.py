@@ -392,6 +392,7 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     client = _only_digits(sol.get("numero_cliente", ""))
     admin = _only_digits(admin_number)
     print(f"[admin] take_control code={code} admin={admin} client={client}")
+    remember_last_code(admin_number, code)
 
     hiring_repo.update(code, {
         "estado": hiring_repo.ESTADO_EN_CONVERSACION,
@@ -412,7 +413,7 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     # Mensaje para el cliente: corto, alegre y sin revelar lo interno.
     await send_text_message(
         client,
-        "¡Ya abrimos tu solicitud! 🙌🎶 Te seguimos por aquí mismo en un toque.",
+        "¡Listo, estamos leyendo tu solicitud! 🙌🎶 Ahora te escribe el manager por aquí mismo.",
     )
     return client
 
@@ -574,12 +575,57 @@ def _estado_label(estado: str) -> str:
 # ---------------------------------------------------------------------------
 # Ver solicitud (detalle + acciones disponibles)
 # ---------------------------------------------------------------------------
+# Última solicitud que cada admin vio/atendió (para "dame el resumen de este
+# cliente" cuando ya no está en control). Memoria simple en proceso.
+_last_code_by_admin: dict = {}
+
+
+def remember_last_code(admin_number: str, code: str) -> None:
+    admin = _only_digits(admin_number)
+    if admin and code:
+        _last_code_by_admin[admin] = code
+
+
+def get_last_code(admin_number: str) -> str:
+    return _last_code_by_admin.get(_only_digits(admin_number), "")
+
+
+async def send_client_summary(admin_number: str, code: str = "") -> None:
+    """Muestra el resumen/contexto de un cliente para que el admin entienda a
+    quién atiende. Si no se indica código, usa el último que tocó este admin;
+    si no hay, la solicitud más reciente."""
+    code = code or get_last_code(admin_number)
+    sol = hiring_repo.get_by_code(code) if code else None
+    if not sol:
+        recientes = hiring_repo.get_recent(limit=1)
+        sol = recientes[0] if recientes else None
+    if not sol:
+        await send_text_message(
+            admin_number,
+            "Todavía no hay solicitudes para resumir. Cuando un cliente escriba, "
+            "aquí te muestro el contexto. Escribe *ver solicitudes* para la lista.",
+        )
+        return
+
+    code = sol.get("codigo_solicitud", "")
+    remember_last_code(admin_number, code)
+    estado = str(sol.get("estado", "-")).strip().upper()
+    cliente = sol.get("nombre_o_dni", sol.get("numero_cliente", "-"))
+    resumen = _context_summary(sol, header=f"{cliente} ({code})")
+    await _send_admin(
+        admin_number,
+        "🧾 Resumen del cliente\n\n" + resumen + f"\n\nEstado: {_estado_label(estado)}",
+        codigo=code,
+    )
+
+
 async def view_request(admin_number: str, code: str) -> None:
     sol = hiring_repo.get_by_code(code)
     if not sol:
         await send_text_message(admin_number, f"No encontré la solicitud {code}.")
         return
 
+    remember_last_code(admin_number, code)
     estado = str(sol.get("estado", "-")).strip().upper()
     admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'
 

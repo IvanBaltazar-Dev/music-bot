@@ -36,6 +36,7 @@ from app.services import (
     admin_service,
     error_service,
     event_service,
+    gemini_service,
     group_info_service,
     hiring_service,
     intent_service,
@@ -548,6 +549,33 @@ _TEXT_ACTION = {
 }
 
 
+# Acción que sugiere la IA -> comando admin equivalente.
+_AI_ADMIN_ACTION = {
+    "VER_SOLICITUDES": intent_service.ADMIN_VIEW_REQUESTS,
+    "VER_EVENTOS": intent_service.ADMIN_VIEW_EVENTS,
+    "METRICAS": intent_service.ADMIN_VIEW_METRICS,
+    "REGISTRAR_EVENTO": intent_service.ADMIN_REGISTER_EVENT,
+    "RESUMEN_CLIENTE": intent_service.ADMIN_CLIENT_SUMMARY,
+    "AYUDA": intent_service.ADMIN_HELP,
+}
+
+
+async def _admin_ai_assist(to: str, text: str) -> bool:
+    """Cuando las reglas no entienden al admin, la IA interpreta su pedido y lo
+    enruta a una acción del panel. Devuelve True si pudo asistir."""
+    if not (text and gemini_service.is_enabled()):
+        return False
+    result = gemini_service.classify_admin_request(text)
+    if not (result.get("success") and result.get("confidence", 0.0) >= 0.6):
+        return False
+    command = _AI_ADMIN_ACTION.get(result.get("action", ""))
+    if not command:
+        return False
+    print(f"[admin] ai_assist action={result.get('action')} -> {command}")
+    await _handle_admin_command(to, command, text)
+    return True
+
+
 async def _handle_admin_command(to: str, command: str, text: str):
     if command == intent_service.ADMIN_MENU:
         await admin_service.send_menu(to)
@@ -564,6 +592,8 @@ async def _handle_admin_command(to: str, command: str, text: str):
         await admin_service.send_requests_list(to)
     elif command == intent_service.ADMIN_VIEW_EVENTS:
         await admin_service.send_events_list(to)
+    elif command == intent_service.ADMIN_CLIENT_SUMMARY:
+        await admin_service.send_client_summary(to)
     elif command == intent_service.ADMIN_VIEW_METRICS:
         await _send_text(to, metrics_service.format_summary(), flujo="admin")
     elif command in _TEXT_ACTION:
@@ -927,7 +957,11 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
                     await admin_service.send_menu(from_number)
                 return
 
-            # Texto suelto sin contexto: mostrar el menú.
+            # Las reglas no entendieron: la IA asiste al admin (si está activa).
+            if await _admin_ai_assist(from_number, command_text):
+                return
+
+            # Sin IA o sin certeza: mostrar el menú.
             await admin_service.send_menu(from_number)
             return
 

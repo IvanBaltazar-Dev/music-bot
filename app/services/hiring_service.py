@@ -49,5 +49,5 @@ def texto_cierre_cliente(nombre: str) -> str:
         "Ya dejé tu solicitud bien encargada. Ahora vamos a despertar a nuestro "
         "manager 😄🎶\n\n"
         "Te responderán por este mismo chat para coordinar los detalles. "
-        "Estate atento por aquí."
+        "Quedate atento por aquí."
     )

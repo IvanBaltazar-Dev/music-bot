@@ -120,8 +120,48 @@ def classify_intent(text: str) -> dict:
         return {"success": False}
 
 
-# NOTA: la IA NO redacta respuestas libres. Solo clasifica intenciones
-# (classify_intent). Así nunca contesta temas fuera de la agrupación.
+# Acciones que la IA puede sugerir cuando un ADMIN escribe en lenguaje natural
+# y las reglas no lo entienden. Solo clasifica (no redacta).
+_VALID_ADMIN_ACTIONS = {
+    "VER_SOLICITUDES", "VER_EVENTOS", "METRICAS", "REGISTRAR_EVENTO",
+    "RESUMEN_CLIENTE", "AYUDA", "NADA",
+}
+
+
+def classify_admin_request(text: str) -> dict:
+    """Asistente para administradores: clasifica un pedido en lenguaje natural
+    en una acción del panel. Devuelve {success, action, confidence}."""
+    if not _enabled or not _client:
+        return {"success": False}
+    try:
+        prompt = (
+            "Eres el asistente de un administrador en el panel de WhatsApp de una "
+            "agrupación musical. Clasifica el pedido del admin en UNA acción. NO "
+            "respondas el pedido, solo clasifícalo:\n"
+            "- VER_SOLICITUDES: ver la lista de solicitudes/clientes/leads.\n"
+            "- VER_EVENTOS: ver/gestionar la agenda de eventos.\n"
+            "- METRICAS: ver métricas/estadísticas/reporte.\n"
+            "- REGISTRAR_EVENTO: agendar/crear un evento nuevo.\n"
+            "- RESUMEN_CLIENTE: quiere el resumen/contexto de la conversación con "
+            "un cliente, saber de qué se habló o a quién atiende.\n"
+            "- AYUDA: cómo usar el bot.\n"
+            "- NADA: no encaja en ninguna.\n\n"
+            f"Pedido: {text}\n\n"
+            'Responde SOLO JSON sin markdown: {"action": "...", "confidence": 0.0-1.0}'
+        )
+        result = json.loads(_strip_json(_generate(prompt)))
+        action = str(result.get("action", "NADA")).upper()
+        if action not in _VALID_ADMIN_ACTIONS:
+            action = "NADA"
+        confidence = float(result.get("confidence", 0.5))
+        return {"success": True, "action": action,
+                "confidence": min(1.0, max(0.0, confidence))}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemini] error en classify_admin_request: {exc.__class__.__name__}")
+        return {"success": False}
+
+
+# NOTA: la IA NO redacta respuestas libres a clientes. Solo clasifica.
 
 
 def _strip_json(text: str) -> str:

@@ -39,6 +39,7 @@ ADMIN_DISCARD_REQUEST = "discard_request"
 ADMIN_HELP = "admin_help"
 ADMIN_MENU = "admin_menu"
 ADMIN_VIEW_EVENTS = "view_events"
+ADMIN_CLIENT_SUMMARY = "client_summary"   # resumen de la conversación con un cliente
 
 # --- IDs de botones: flujos principales ---
 FLOW_SEE_EVENTS = "FLOW_SEE_EVENTS"
@@ -157,7 +158,14 @@ _ADMIN_KEYWORDS = {
     ADMIN_REGISTER_EVENT: ["registrar evento", "nuevo evento", "crear evento", "agregar evento"],
     ADMIN_VIEW_EVENTS: ["ver eventos", "ver agenda", "listar eventos", "lista de eventos", "agenda"],
     ADMIN_VIEW_REQUESTS: ["ver solicitudes", "solicitudes", "leads", "cotizaciones"],
-    ADMIN_VIEW_METRICS: ["metricas", "reporte", "estadisticas", "resumen"],
+    ADMIN_CLIENT_SUMMARY: [
+        "resumen de la conversacion", "resumen de la conversación",
+        "resumen del cliente", "resumen de este cliente", "resumen del chat",
+        "de que hablamos", "de que hablo", "que queria", "que quiere el cliente",
+        "contexto del cliente", "con quien hablo", "quien es este cliente",
+        "resumen conversacion",
+    ],
+    ADMIN_VIEW_METRICS: ["metricas", "reporte", "estadisticas", "estadistica", "kpis"],
     ADMIN_RELEASE: ["soltar control", "liberar control", "soltar", "dejar control", "dejar", "salir"],
     ADMIN_CLOSE_REQUEST: ["cerrar solicitud", "cerrar caso", "finalizar solicitud", "finalizar caso", "cerrar"],
     ADMIN_MARK_QUOTED: ["marcar cotizada", "cotizada", "ya se cotizo", "ya cotice", "cliente cotizado", "cotizar"],
@@ -167,9 +175,9 @@ _ADMIN_KEYWORDS = {
 
 # Orden de prioridad al resolver comandos admin (lo más específico primero)
 _ADMIN_PRIORITY = [
-    ADMIN_MENU, ADMIN_REGISTER_EVENT, ADMIN_VIEW_EVENTS, ADMIN_VIEW_REQUESTS,
-    ADMIN_VIEW_METRICS, ADMIN_CLOSE_REQUEST, ADMIN_MARK_QUOTED,
-    ADMIN_DISCARD_REQUEST, ADMIN_RELEASE, ADMIN_HELP,
+    ADMIN_MENU, ADMIN_REGISTER_EVENT, ADMIN_VIEW_EVENTS, ADMIN_CLIENT_SUMMARY,
+    ADMIN_VIEW_REQUESTS, ADMIN_VIEW_METRICS, ADMIN_CLOSE_REQUEST,
+    ADMIN_MARK_QUOTED, ADMIN_DISCARD_REQUEST, ADMIN_RELEASE, ADMIN_HELP,
 ]
 
 # Orden de prioridad al resolver intenciones públicas
