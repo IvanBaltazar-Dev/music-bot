@@ -43,13 +43,18 @@ id_evento | fecha_evento | hora_inicio | hora_fin | ciudad | lugar | google_maps
 ---
 
 ### 2. **SolicitudesContratacion**
-**Encabezados NUEVOS (10 columnas):**
+**Encabezados (14 columnas, A–N):**
 ```
-codigo_solicitud | fecha_registro | estado | numero_cliente | nombre_o_dni | admin_asignado | modo_atencion | fecha_ultima_interaccion | observaciones | origen
+codigo_solicitud | fecha_registro | estado | numero_cliente | nombre_o_dni | admin_asignado | modo_atencion | fecha_ultima_interaccion | observaciones | origen | tipo_evento | fecha_evento | horario_evento | localidad
 ```
 
+**Columnas K–N (detalles del evento que pidió el cliente):**
+- tipo_evento, fecha_evento, horario_evento, localidad
+- Se muestran al admin en la notificación de nueva solicitud, "ver solicitud" y
+  "tomar control". Agrégalas a la derecha de `origen`, en ese orden exacto.
+
 **Columnas a ELIMINAR (si existen):**
-- numero_contacto, localidad, tipo_evento, fecha_evento, horario_evento, cantidad_personas, ultimo_mensaje_cliente
+- numero_contacto, cantidad_personas, ultimo_mensaje_cliente
 
 ---
 
@@ -156,7 +161,7 @@ id_error | fecha_hora | modulo | numero_usuario | mensaje_usuario | error | stac
 | Hoja | Estado | Cambio |
 |------|--------|--------|
 | Eventos | MODIFICA | 10 → 10 cols (elimina 10, agrega 0) |
-| SolicitudesContratacion | MODIFICA | 17 → 10 cols (elimina 7) |
+| SolicitudesContratacion | MODIFICA | 17 → 14 cols (quita 7, repone 4 del evento: tipo_evento, fecha_evento, horario_evento, localidad) |
 | Conversaciones | MODIFICA | 10 → 8 cols (elimina 4, agrega 2 nuevas) |
 | InteresesLocalidad | SIN CAMBIOS | 7 cols |
 | Mensajes | SIN CAMBIOS | 12 cols |
@@ -178,7 +183,7 @@ id_error | fecha_hora | modulo | numero_usuario | mensaje_usuario | error | stac
 - [ ] Eliminar hoja `NotificacionesAdmin`
 - [ ] Eliminar hoja `Catalogos`
 - [ ] Actualizar hoja `Eventos` (eliminar 10 columnas viejas)
-- [ ] Actualizar hoja `SolicitudesContratacion` (eliminar 7 columnas viejas)
+- [ ] Actualizar hoja `SolicitudesContratacion` (quitar numero_contacto, cantidad_personas, ultimo_mensaje_cliente; agregar K–N: tipo_evento, fecha_evento, horario_evento, localidad)
 - [ ] Actualizar hoja `Conversaciones` (eliminar 4, agregar 2)
 - [ ] Verificar que todas las filas de datos sean compatibles
 - [ ] Hacer backup antes de cambios (descargar como Excel)
