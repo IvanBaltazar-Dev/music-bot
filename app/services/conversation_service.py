@@ -419,11 +419,10 @@ async def _finalize_admin_flow(to: str, resp: dict):
 
 def _admin_event_confirmation(d: dict) -> str:
     return (
-        "Listo 🙌 Evento registrado.\n\n"
+        "🎉 ¡Evento agendado! Quedó grabado en piedra (bueno, en la hoja 😄)\n\n"
         f"📅 {d.get('fecha_evento', '-')}\n"
         f"📍 {d.get('lugar', '-')} — {d.get('ciudad', '-')}\n"
-        f"🕘 {d.get('hora_inicio', '-')}\n\n"
-        "Ya quedó guardado en agenda."
+        f"🕘 {d.get('hora_inicio', '-')}"
     )
 
 
@@ -526,7 +525,7 @@ async def _handle_admin_button(to: str, action: str, code: str):
                 flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
             )
     elif action == "cancel":
-        await _send_text(to, "Listo, no cambié nada 👍", flujo="admin")
+        await _send_text(to, "👌 Tranqui, no toqué nada. Todo sigue igual 😎", flujo="admin")
 
 
 # ---------------------------------------------------------------------------

@@ -100,6 +100,53 @@ def _with_trace(sol: dict, message: str) -> str:
     return current + "\n" + trace
 
 
+def _clean_notes(observaciones: str) -> str:
+    """Devuelve solo las notas legibles (sin el historial técnico [fecha] ...)."""
+    if not observaciones:
+        return ""
+    utiles = [
+        ln.strip() for ln in str(observaciones).splitlines()
+        if ln.strip() and not ln.strip().startswith("[")
+    ]
+    return " · ".join(utiles)
+
+
+# Etiquetas de quién habla en el transcript
+_DIR_LABEL = {
+    msg_repo.ENTRANTE: "👤",
+    msg_repo.CLIENTE_A_ADMIN: "👤",
+    msg_repo.SALIENTE: "🤖",
+    msg_repo.ADMIN_A_CLIENTE: "🧑‍💼",
+}
+
+
+def _format_transcript(client_number: str, nombre: str = "", limit: int = 5) -> str:
+    """Arma un mini-historial de los últimos mensajes con el cliente."""
+    try:
+        mensajes = msg_repo.recent_for_client(client_number, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] no se pudo leer el hilo: {exc.__class__.__name__}")
+        mensajes = []
+
+    if not mensajes:
+        return ""
+
+    quien_cliente = (nombre or "Cliente").split()[0]
+    lineas = []
+    for m in mensajes:
+        direccion = str(m.get("direccion", "")).strip().upper()
+        icono = _DIR_LABEL.get(direccion, "•")
+        quien = quien_cliente if icono == "👤" else ("Bot" if icono == "🤖" else "Tú")
+        texto = str(m.get("texto", "")).strip().replace("\n", " ")
+        if not texto:
+            continue
+        if len(texto) > 90:
+            texto = texto[:87] + "…"
+        lineas.append(f"{icono} {quien}: {texto}")
+
+    return "\n".join(lineas)
+
+
 def admin_numbers() -> list[str]:
     """Lista única de administradores (config .env + hoja Administradores)."""
     nums = list(settings.admin_numbers)
@@ -175,7 +222,7 @@ async def send_menu(numero: str) -> None:
     ]
     await _send_admin_list(
         numero,
-        "🎛️ Menú de administrador\n\n¿Qué deseas hacer?",
+        "🎛️ ¡Hola, jefe! ¿Qué hacemos hoy? 🎶",
         options,
         button_text="Abrir menú",
     )
@@ -337,27 +384,28 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     })
     conv_repo.set_state(client, conv_repo.ADMIN_CONTROL, admin_numero=admin)
 
-    # Extrae contexto de última acción si existe
-    obs_label, obs_time = _extract_last_admin_action(sol.get("observaciones", ""))
-    context_block = ""
-    if obs_label and obs_time:
-        context_block = f"\n📋 {obs_label} (el {obs_time})"
-
     nombre_cliente = sol.get('nombre_o_dni', client) or client
-    await _send_admin(
-        admin_number,
-        f"✅ Ahora atiendes a {nombre_cliente} ({code}){context_block}\n\n"
-        f"📞 {client}\n"
-        f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
-        "Escribe tu respuesta aquí 👇\n\n"
-        "Para salir: escribe *dejar control* o *soltar*",
-        codigo=code,
+    notas = _clean_notes(sol.get("observaciones", ""))
+    transcript = _format_transcript(client, nombre_cliente)
+
+    bloques = [f"🎤 ¡A escena! Ahora atiendes a {nombre_cliente} ({code})"]
+    if transcript:
+        bloques.append("🧵 Aquí se quedó la charla:\n" + transcript)
+    else:
+        bloques.append("🧵 Todavía no hay mensajes previos con este cliente.")
+    bloques.append(f"📞 {client}")
+    if notas:
+        bloques.append(f"📝 {notas}")
+    bloques.append(
+        "Escribe tu respuesta y le llega directo 👇\n"
+        "_(para salir sin enviar nada: *#salir*)_"
     )
-    admin_label = _admin_label(admin)
+    await _send_admin(admin_number, "\n\n".join(bloques), codigo=code)
+
+    # Mensaje para el cliente: corto, alegre y sin revelar lo interno.
     await send_text_message(
         client,
-        f"✅ CONVERSACIÓN INICIADA CON {admin_label}\n\n"
-        "Desde aquí continuará la atención por este mismo chat.",
+        "¡Ya abrimos tu solicitud! 🙌🎶 Te seguimos por aquí mismo en un toque.",
     )
     return client
 
@@ -477,19 +525,22 @@ async def view_request(admin_number: str, code: str) -> None:
         return
 
     estado = str(sol.get("estado", "-")).strip().upper()
-    admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'
+    admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Nadie todavía 🙋'
     cliente = sol.get('nombre_o_dni', sol.get('numero_cliente', '-'))
+    notas = _clean_notes(sol.get("observaciones", ""))
+    transcript = _format_transcript(sol.get("numero_cliente", ""), cliente, limit=4)
 
-    await _send_admin(
-        admin_number,
-        f"📄 {code}\n\n"
-        f"👤 {cliente}\n"
-        f"📞 {sol.get('numero_cliente', '-')}\n"
-        f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
-        f"Estado: {_estado_label(estado)}\n"
-        f"Responsable: {admin_label}",
-        codigo=code,
-    )
+    bloques = [
+        f"📄 {code}",
+        f"👤 {cliente}\n📞 {sol.get('numero_cliente', '-')}",
+    ]
+    if notas:
+        bloques.append(f"📝 {notas}")
+    if transcript:
+        bloques.append("🧵 Últimos mensajes:\n" + transcript)
+    bloques.append(f"Estado: {_estado_label(estado)}\nResponsable: {admin_label}")
+
+    await _send_admin(admin_number, "\n\n".join(bloques), codigo=code)
 
     # Las solicitudes finalizadas pueden reabrirse a pendiente, no más.
     finalizada = estado in {
@@ -517,7 +568,7 @@ async def view_request(admin_number: str, code: str) -> None:
         ]
     await _send_admin_list(
         admin_number,
-        f"¿Qué deseas hacer con {code}?",
+        f"🎯 {code} — ¿qué hacemos con este?",
         options,
         button_text="Elegir acción",
         codigo=code,
@@ -539,8 +590,8 @@ async def send_requests_list(admin_number: str) -> None:
     if not requests:
         await _send_admin(
             admin_number,
-            "📭 Por ahora no hay solicitudes registradas.\n\n"
-            "Cuando un cliente complete el flujo de contratación aparecerá aquí.",
+            "📭 Bandeja vacía, ¡a relajarse! 😎\n\n"
+            "En cuanto un cliente complete su solicitud, aparece aquí solita.",
         )
         return
 
@@ -557,7 +608,7 @@ async def send_requests_list(admin_number: str) -> None:
 
     await _send_admin_list(
         admin_number,
-        "📋 Solicitudes recientes\n\nElige una para ver el detalle y las acciones.",
+        "📋 Tus solicitudes recientes 👇\n\nToca una para ver el chisme completo y qué hacer.",
         options,
         button_text="Ver solicitudes",
     )
@@ -588,11 +639,11 @@ async def confirm_action(admin_number: str, action: str, code: str) -> None:
     cliente = sol.get("nombre_o_dni") or sol.get("numero_cliente", "-")
     await _send_admin(
         admin_number,
-        f"¿Seguro que quieres {verbo} la solicitud {code}?\n\n"
+        f"🤔 A ver, confírmame: ¿{verbo} la solicitud {code}?\n\n"
         f"👤 {cliente}",
         buttons=[
-            {"id": intent_service.confirm_id(action, code), "title": "Sí, confirmar"},
-            {"id": intent_service.BTN_CANCEL, "title": "Cancelar"},
+            {"id": intent_service.confirm_id(action, code), "title": "Sí, dale"},
+            {"id": intent_service.BTN_CANCEL, "title": "Mejor no"},
         ],
         codigo=code,
     )
@@ -623,9 +674,14 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
         except Exception:  # noqa: BLE001
             pass
 
+    mensajes_ok = {
+        hiring_repo.ESTADO_CERRADA: f"🎉 ¡Caso cerrado! {code} a la bolsa. Bien ahí 💪",
+        hiring_repo.ESTADO_COTIZADA: f"💰 ¡Cotización enviada! {code} marcada como cotizada.",
+        hiring_repo.ESTADO_DESCARTADA: f"🗑️ Listo, {code} descartada. A por la siguiente 😉",
+    }
     await _send_admin(
         admin_number,
-        f"Listo ✅ La solicitud {code} quedó en estado {_estado_label(final_state)}.",
+        mensajes_ok.get(final_state, f"Listo ✅ {code} quedó en {_estado_label(final_state)}."),
         codigo=code,
     )
     print(f"[admin] state_by_code code={code} state={final_state} admin={admin}")
@@ -654,7 +710,7 @@ async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
             pass
     await _send_admin(
         admin_number,
-        f"Listo 🟢 La solicitud {code} volvió a la cola como pendiente.",
+        f"🟢 {code} de vuelta a la cola. ¡Queda en pausa para después! ⏳",
         codigo=code,
     )
     return {"codigo_solicitud": code, "estado": hiring_repo.ESTADO_ABIERTA, "numero_cliente": client}
@@ -869,7 +925,10 @@ async def release_control(admin_number: str) -> bool:
     admin = _only_digits(admin_number)
     client = controlling_client_of(admin_number)
     if not client:
-        await send_text_message(admin_number, "No tienes ninguna conversación bajo control.")
+        await send_text_message(
+            admin_number,
+            "🤷 No estás atendiendo a nadie ahora mismo. ¡Estás libre! 😄",
+        )
         return False
     conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
     sol = hiring_repo.get_by_client(client)
@@ -884,8 +943,7 @@ async def release_control(admin_number: str) -> bool:
         })
     await send_text_message(
         admin_number,
-        "Listo, devolví la conversación al bot 🙌 El cliente volverá a recibir "
-        "respuestas automáticas.",
+        "👋 Saliste de la conversación. El bot toma la posta de nuevo. ¡Gracias, crack! 🎶",
     )
     return True
 

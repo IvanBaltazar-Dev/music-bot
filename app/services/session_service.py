@@ -673,14 +673,14 @@ def missing_event_fields(d: dict) -> list[str]:
 
 def admin_event_template() -> str:
     return (
-        "📝 Registrar evento\n\n"
-        "Cópialo y complétalo (puedes omitir lo que no tengas):\n\n"
+        "📝 ¡A llenar la agenda! 🎉\n\n"
+        "Cópiame esto y complétalo (lo que no tengas, déjalo):\n\n"
         "Ciudad: \n"
         "Lugar: \n"
         "Fecha: 15/06/2026\n"
         "Hora: 9 pm\n"
         "Mapa: https://maps.google.com/...\n\n"
-        "Mínimo necesito *ciudad* y *fecha*. Escribe *#salir* para cancelar."
+        "Con *ciudad* y *fecha* ya me arreglo 😉 (*#salir* para cancelar)"
     )
 
 
@@ -728,12 +728,12 @@ def start_admin_event(number: str, parsed: dict):
 
 def admin_event_summary(d: dict) -> str:
     return (
-        "Revisa el evento antes de guardar 👇\n\n"
+        "👀 Échale un ojo antes de guardar:\n\n"
         f"📅 Fecha: {d.get('fecha_evento', '-')}\n"
         f"🕒 Hora: {d.get('hora_inicio', '-')}\n"
         f"📍 Lugar: {d.get('lugar', '-')} — {d.get('ciudad', '-')}\n"
         f"🗺️ Mapa: {d.get('google_maps_url', '-')}\n\n"
-        "¿Confirmas? Responde *sí* para guardar o *no* para cancelar."
+        "¿Le damos? Responde *sí* para guardar o *no* para cancelar 🎵"
     )
 
 
