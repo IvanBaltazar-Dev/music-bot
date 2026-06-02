@@ -32,7 +32,10 @@ _VALID_INTENTS = {
 
 
 def _init_client():
-    """Inicialización perezosa de Gemini (tolerante a fallos)."""
+    """Inicialización perezosa de Gemini (tolerante a fallos).
+
+    Usa el SDK nuevo `google-genai` (import `from google import genai`).
+    """
     global _client, _enabled
 
     if not settings.gemini_enabled:
@@ -40,16 +43,24 @@ def _init_client():
         return
 
     try:
-        import google.generativeai as genai  # type: ignore
+        from google import genai  # type: ignore
 
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        _client = genai.GenerativeModel(settings.gemini_model)
+        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
         _enabled = True
         print(f"[gemini] inicializado con {settings.gemini_model}.")
     except ModuleNotFoundError:
-        print("[gemini] librería google-generativeai no instalada. Usando solo reglas.")
+        print("[gemini] librería google-genai no instalada. Usando solo reglas.")
     except Exception as exc:  # noqa: BLE001
         print(f"[gemini] no se pudo inicializar ({exc.__class__.__name__}). Usando solo reglas.")
+
+
+def _generate(prompt: str) -> str:
+    """Llama al modelo y devuelve el texto. Lanza si falla (lo maneja el caller)."""
+    response = _client.models.generate_content(
+        model=settings.gemini_model,
+        contents=prompt,
+    )
+    return (response.text or "").strip()
 
 
 _init_client()
@@ -85,8 +96,7 @@ def classify_intent(text: str) -> dict:
             'Responde SOLO un JSON válido sin markdown: '
             '{"intent": "...", "confidence": 0.0-1.0}'
         )
-        response = _client.generate_content(prompt)
-        result = json.loads(_strip_json(response.text))
+        result = json.loads(_strip_json(_generate(prompt)))
         intent = str(result.get("intent", "UNKNOWN")).upper()
         if intent not in _VALID_INTENTS:
             intent = "UNKNOWN"
@@ -128,8 +138,7 @@ def generate_reply(user_text: str, contexto: str = "") -> str | None:
             f"Mensaje del usuario: {user_text}\n\n"
             "Respuesta (texto plano, sin markdown):"
         )
-        response = _client.generate_content(prompt)
-        reply = (response.text or "").strip()
+        reply = _generate(prompt)
         return reply or None
     except Exception as exc:  # noqa: BLE001
         print(f"[gemini] error en generate_reply: {exc.__class__.__name__}")
