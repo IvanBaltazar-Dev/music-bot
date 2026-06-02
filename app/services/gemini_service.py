@@ -27,7 +27,7 @@ _enabled = False
 # Categorías que Gemini puede devolver (coinciden con las intenciones del bot).
 _VALID_INTENTS = {
     "GREETING", "QUIERO_IR_A_VERLOS", "QUIERO_CONTRATAR",
-    "CONOCE_AGRUPACION", "UNKNOWN",
+    "CONOCE_AGRUPACION", "CONTACTO", "FUERA_DE_TEMA", "UNKNOWN",
 }
 
 
@@ -82,15 +82,21 @@ def classify_intent(text: str) -> dict:
 
     try:
         prompt = (
-            "Eres un clasificador de intenciones para el WhatsApp de una agrupación "
-            "musical. Clasifica el mensaje del usuario en EXACTAMENTE una categoría:\n"
-            "- GREETING: saludos o inicio de conversación.\n"
-            "- QUIERO_IR_A_VERLOS: quiere asistir, pregunta por eventos, fechas, "
-            "lugares, entradas o presentaciones.\n"
-            "- QUIERO_CONTRATAR: quiere contratar, cotizar o llevar la agrupación a "
-            "su evento (cumpleaños, boda, aniversario, etc.).\n"
+            "Eres un CLASIFICADOR de intenciones para el WhatsApp de una agrupación "
+            "musical. Tu ÚNICA tarea es clasificar; NO respondas la pregunta del "
+            "usuario ni des información. Devuelve EXACTAMENTE una categoría:\n"
+            "- GREETING: solo un saludo, sin una consulta concreta.\n"
+            "- QUIERO_IR_A_VERLOS: pregunta por eventos, fechas, lugares, entradas o "
+            "presentaciones a las que quiere asistir.\n"
+            "- QUIERO_CONTRATAR: quiere contratar/cotizar o llevar la agrupación a su "
+            "evento (cumpleaños, boda, aniversario, etc.).\n"
             "- CONOCE_AGRUPACION: quiere conocer a la agrupación, videos, música, "
             "redes, integrantes o trayectoria.\n"
+            "- CONTACTO: quiere comunicarse con una persona, pide un número/teléfono, "
+            "que lo llamen, retomar una conversación previa o hablar con un asesor.\n"
+            "- FUERA_DE_TEMA: cualquier cosa que NO sea sobre ESTA agrupación ni sus "
+            "presentaciones/contratación (cultura general, otras agrupaciones, "
+            "preguntas personales, chistes, etc.).\n"
             "- UNKNOWN: no encaja claramente en ninguna.\n\n"
             f"Mensaje: {text}\n\n"
             'Responde SOLO un JSON válido sin markdown: '
@@ -111,38 +117,8 @@ def classify_intent(text: str) -> dict:
         return {"success": False}
 
 
-def generate_reply(user_text: str, contexto: str = "") -> str | None:
-    """Redacta una respuesta natural y breve usando contexto controlado.
-
-    Se usa solo cuando las reglas no cubren el mensaje. Devuelve el texto o None
-    si Gemini no está disponible o falla (el llamador usa un fallback seguro).
-    """
-    if not _enabled or not _client:
-        return None
-
-    try:
-        prompt = (
-            "Eres el asistente oficial de WhatsApp de una agrupación musical. "
-            "Hablas de forma cercana, profesional y natural; NADA excesivamente "
-            "formal, sin bromas ni chistes.\n"
-            "Reglas estrictas:\n"
-            "- No inventes precios, fechas, lugares ni datos que no estén en el "
-            "contexto.\n"
-            "- El bot NO evalúa ni decide contrataciones; solo orienta y deriva al "
-            "administrador.\n"
-            "- No menciones el nombre de la agrupación en cada frase.\n"
-            "- Responde en 1-3 frases cortas y, si aplica, sugiere amablemente una "
-            "de estas acciones: ver presentaciones, contratar, o conocer a la "
-            "agrupación.\n\n"
-            f"Contexto disponible:\n{contexto or '(sin datos adicionales)'}\n\n"
-            f"Mensaje del usuario: {user_text}\n\n"
-            "Respuesta (texto plano, sin markdown):"
-        )
-        reply = _generate(prompt)
-        return reply or None
-    except Exception as exc:  # noqa: BLE001
-        print(f"[gemini] error en generate_reply: {exc.__class__.__name__}")
-        return None
+# NOTA: la IA NO redacta respuestas libres. Solo clasifica intenciones
+# (classify_intent). Así nunca contesta temas fuera de la agrupación.
 
 
 def _strip_json(text: str) -> str:

@@ -999,6 +999,23 @@ async def cancel_event(admin_number: str, event_id: str) -> None:
     )
 
 
+async def notify_contact_request(client_number: str, texto: str, nombre: str = "") -> None:
+    """Avisa a los admins que un cliente quiere comunicarse / que lo contacten."""
+    admins = admin_numbers()
+    if not admins:
+        return
+    cliente = nombre or client_number
+    cuerpo = (
+        "📞 Un cliente quiere comunicarse\n\n"
+        f"👤 {cliente}\n📞 {_only_digits(client_number)}\n\n"
+        "Mensaje:\n"
+        f"\"{(texto or '').strip()[:300]}\"\n\n"
+        "Escríbele por este chat para atenderlo."
+    )
+    for numero in admins:
+        await _send_admin(numero, cuerpo)
+
+
 async def notify_ticket_interest(client_number: str, event: dict, nombre: str = "") -> None:
     """Avisa a los admins que un cliente quiere info de entradas de un evento."""
     admins = admin_numbers()

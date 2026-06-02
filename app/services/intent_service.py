@@ -22,6 +22,8 @@ INTENT_GREETING = "GREETING"
 INTENT_SEE_EVENTS = "QUIERO_IR_A_VERLOS"
 INTENT_HIRE = "QUIERO_CONTRATAR"
 INTENT_KNOW_GROUP = "CONOCE_AGRUPACION"
+INTENT_CONTACT = "CONTACTO"          # quiere hablar/que lo contacten
+INTENT_OFF_TOPIC = "FUERA_DE_TEMA"   # ajeno a la agrupación (no se responde)
 INTENT_CANCEL = "CANCEL"
 INTENT_UNKNOWN = "UNKNOWN"
 
@@ -122,9 +124,23 @@ _KEYWORDS = {
         "musica", "canciones", "redes", "tiktok", "facebook", "youtube",
         "instagram", "integrantes", "trayectoria", "agrupacion",
     ],
+    INTENT_CONTACT: [
+        "a que numero", "los puedo llamar", "puedo llamarlos", "numero de contacto",
+        "quiero hablar con", "hablar con alguien", "hablar con un asesor",
+        "comunicarme con", "como me comunico", "perdi comunicacion",
+        "perdi la comunicacion", "como los contacto", "contactarlos",
+        "que numero tienen", "su numero", "telefono",
+    ],
     INTENT_CANCEL: [
         "cancelar", "salir", "reiniciar", "empezar de nuevo", "menu",
     ],
+}
+
+# Palabras de saludo/relleno: si lo único que hay es esto, es solo un saludo.
+_GREETING_FILLERS = {
+    "hola", "hl", "hola", "ola", "oa", "holi", "buenas", "buenos", "dias",
+    "tardes", "noches", "hey", "hi", "saludos", "como", "estan", "estas",
+    "esta", "que", "tal", "todo", "bien", "ustedes", "uds", "con",
 }
 
 _ADMIN_KEYWORDS = {
@@ -153,6 +169,7 @@ _INTENT_PRIORITY = [
     INTENT_HIRE,
     INTENT_SEE_EVENTS,
     INTENT_KNOW_GROUP,
+    INTENT_CONTACT,
     INTENT_GREETING,
 ]
 
@@ -209,25 +226,68 @@ def detect_admin_command(text: str):
     return None
 
 
+def _is_pure_greeting(norm: str) -> bool:
+    """True si el mensaje es SOLO un saludo (sin una consulta real adentro)."""
+    tokens = [t for t in norm.split() if len(t) >= 3]
+    meaningful = [t for t in tokens if t not in _GREETING_FILLERS]
+    return len(meaningful) == 0
+
+
+# Intenciones de match "blando": sus keywords son genéricas (saludos, o
+# "agrupación/información"), así que conviene que la IA confirme/filtre.
+_SOFT_INTENTS = {INTENT_GREETING, INTENT_KNOW_GROUP}
+
+# La IA solo CLASIFICA (ayuda a procesar). Mapea sus categorías a las del bot.
+_AI_INTENT_MAP = {
+    "GREETING": INTENT_GREETING,
+    "QUIERO_IR_A_VERLOS": INTENT_SEE_EVENTS,
+    "QUIERO_CONTRATAR": INTENT_HIRE,
+    "CONOCE_AGRUPACION": INTENT_KNOW_GROUP,
+    "CONTACTO": INTENT_CONTACT,
+    "FUERA_DE_TEMA": INTENT_OFF_TOPIC,
+}
+
+
+def _classify_with_ai(text: str):
+    """Pide a la IA que clasifique. Devuelve una intención del bot o None."""
+    if not gemini_service.is_enabled():
+        return None
+    result = gemini_service.classify_intent(text)
+    if not (result.get("success") and result.get("confidence", 0.0) >= 0.6):
+        return None
+    return _AI_INTENT_MAP.get(result.get("intent", ""))
+
+
 def detect_intent(text: str) -> str:
-    """Devuelve la intención pública. INTENT_UNKNOWN si no se reconoce."""
+    """Devuelve la intención pública. La IA ayuda a procesar (clasificar)
+    saludos-con-consulta y mensajes ambiguos; nunca redacta respuestas."""
     norm = normalize(text)
     if not norm:
         return INTENT_UNKNOWN
 
+    rule_intent = None
     for intent in _INTENT_PRIORITY:
         if _matches(norm, _KEYWORDS[intent]):
-            return intent
+            rule_intent = intent
+            break
 
-    # Gemini como respaldo inteligente (solo si las reglas no resolvieron)
-    if gemini_service.is_enabled():
-        result = gemini_service.classify_intent(text)
-        if result.get("success") and result.get("confidence", 0.0) >= 0.6:
-            cand = result.get("intent", "")
-            if cand in (INTENT_GREETING, INTENT_SEE_EVENTS, INTENT_HIRE, INTENT_KNOW_GROUP):
-                return cand
+    # Intenciones "duras" (keywords específicas) -> se confían directo.
+    if rule_intent and rule_intent not in _SOFT_INTENTS:
+        return rule_intent
 
-    return INTENT_UNKNOWN
+    # Saludo a secas -> saludo (sin gastar IA).
+    if rule_intent == INTENT_GREETING and _is_pure_greeting(norm):
+        return INTENT_GREETING
+
+    # Matches "blandos" (saludo+consulta, o CONOCE por palabras genéricas como
+    # "agrupación") o nada reconocido: la IA ayuda a interpretar y a filtrar
+    # lo que está fuera de tema.
+    ai_intent = _classify_with_ai(text)
+    if ai_intent:
+        return ai_intent
+
+    # Sin IA o sin certeza: se respeta la regla; si no había, desconocido.
+    return rule_intent or INTENT_UNKNOWN
 
 
 def button_to_intent(button_id: str):

@@ -27,7 +27,6 @@ from app.models.session import (
     ADMIN_EVENT_STATES,
 )
 from app.repositories import (
-    content_repository,
     conversation_repository as conv_repo,
     hiring_request_repository as hiring_repo,
     interest_repository,
@@ -37,7 +36,6 @@ from app.services import (
     admin_service,
     error_service,
     event_service,
-    gemini_service,
     group_info_service,
     hiring_service,
     intent_service,
@@ -769,24 +767,6 @@ async def _handle_existing_hire_request(to: str, text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Despacho de intención pública (texto libre)
 # ---------------------------------------------------------------------------
-def _gemini_context() -> str:
-    """Contexto controlado para Gemini (sin datos sensibles)."""
-    partes = []
-    try:
-        desc = content_repository.get_description()
-        if desc:
-            partes.append(f"Sobre la agrupación: {desc}")
-    except Exception:  # noqa: BLE001
-        pass
-    partes.append(
-        "El bot puede ayudar con: (1) ver próximas presentaciones, "
-        "(2) recibir solicitudes de contratación para que un administrador "
-        "coordine, y (3) conocer a la agrupación (videos, música, redes). "
-        "No maneja precios ni cierra contrataciones."
-    )
-    return "\n".join(partes)
-
-
 async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = ""):
     if intent == intent_service.INTENT_GREETING:
         await _send_greeting(to, profile_name)
@@ -806,24 +786,43 @@ async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = 
         await _start_hire(to)
     elif intent == intent_service.INTENT_KNOW_GROUP:
         await _start_know_group(to)
-    else:  # UNKNOWN -> Gemini como respaldo inteligente (si está disponible)
-        reply = None
-        if text and gemini_service.is_enabled():
-            reply = gemini_service.generate_reply(text, _gemini_context())
-            if reply:
-                metrics_service.log(to, metrics_service.GEMINI_USED, flujo="fallback",
-                                    mensaje=text, respuesta=reply)
+    elif intent == intent_service.INTENT_CONTACT:
+        await _handle_contact(to, profile_name, text)
+    elif intent == intent_service.INTENT_OFF_TOPIC:
+        # Fuera de tema: NO se responde la consulta; se redirige amablemente.
+        metrics_service.log(to, "FUERA_DE_TEMA", mensaje=text)
+        await _send_buttons(
+            to,
+            "Por aquí te ayudo con todo lo de la agrupación 🎶 "
+            "(ver presentaciones, contratarnos o conocernos).\n\n"
+            "¿Qué te gustaría hacer?",
+            _main_menu_buttons(),
+        )
+    else:  # UNKNOWN -> nunca inventamos respuesta; ofrecemos el menú.
         metrics_service.log(to, metrics_service.UNKNOWN, mensaje=text)
-        if reply:
-            await _send_text(to, reply)
-            await _send_buttons(to, "¿Te ayudo con algo de esto?", _main_menu_buttons())
-        else:
-            await _send_buttons(
-                to,
-                "Gracias por tu mensaje 🙌 Para ayudarte mejor, cuéntame qué te "
-                "gustaría hacer hoy:",
-                _main_menu_buttons(),
-            )
+        await _send_buttons(
+            to,
+            "Gracias por tu mensaje 🙌 Para ayudarte mejor, cuéntame qué te "
+            "gustaría hacer hoy:",
+            _main_menu_buttons(),
+        )
+
+
+async def _handle_contact(to: str, profile_name: str, text: str):
+    """El cliente quiere comunicarse / que lo contacten. Atendemos por aquí y
+    avisamos a un asesor (sin exponer números)."""
+    metrics_service.log(to, "CONTACTO", flujo="contacto", mensaje=text)
+    await _send_buttons(
+        to,
+        "¡Claro! Por aquí mismo te atendemos 🙌 En breve un asesor puede "
+        "escribirte por este chat.\n\nMientras tanto, ¿te ayudo con algo de esto?",
+        _main_menu_buttons(),
+        flujo="contacto",
+    )
+    try:
+        await admin_service.notify_contact_request(to, text, profile_name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conversation] no se pudo avisar contacto: {exc.__class__.__name__}")
 
 
 # ---------------------------------------------------------------------------
