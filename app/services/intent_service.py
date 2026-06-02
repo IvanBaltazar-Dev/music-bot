@@ -29,7 +29,6 @@ INTENT_UNKNOWN = "UNKNOWN"
 ADMIN_REGISTER_EVENT = "register_event"
 ADMIN_VIEW_REQUESTS = "view_requests"
 ADMIN_VIEW_METRICS = "view_metrics"
-ADMIN_INIT_SHEETS = "init_sheets"
 ADMIN_RELEASE = "release_control"
 ADMIN_CLOSE_REQUEST = "close_request"
 ADMIN_MARK_QUOTED = "mark_quoted"
@@ -103,7 +102,6 @@ _ADMIN_KEYWORDS = {
     ADMIN_REGISTER_EVENT: ["registrar evento", "nuevo evento", "crear evento", "agregar evento"],
     ADMIN_VIEW_REQUESTS: ["ver solicitudes", "solicitudes", "leads", "cotizaciones"],
     ADMIN_VIEW_METRICS: ["metricas", "reporte", "estadisticas", "resumen"],
-    ADMIN_INIT_SHEETS: ["inicializar hojas", "crear hojas", "init hojas"],
     ADMIN_RELEASE: ["soltar control", "liberar control", "soltar"],
     ADMIN_CLOSE_REQUEST: ["cerrar solicitud", "cerrar caso", "finalizar solicitud", "finalizar caso"],
     ADMIN_MARK_QUOTED: ["marcar cotizada", "cotizada", "ya se cotizo", "ya cotice", "cliente cotizado"],

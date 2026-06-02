@@ -375,9 +375,13 @@ async def _finalize_flow(to: str, resp: dict):
         conv_repo.set_state(to, conv_repo.ESPERANDO_RESPUESTA)
 
     elif kind == "admin_event":
-        event_id = event_service.create_event(data)
-        await _send_text(to, _admin_event_confirmation(data), flujo="admin")
-        metrics_service.log(to, "EVENTO_REGISTRADO", flujo="admin", id_evento=event_id)
+        ok, error_msg = event_service.validate_event(data)
+        if not ok:
+            await _send_text(to, f"❌ {error_msg}", flujo="admin")
+        else:
+            event_id = event_service.create_event(data)
+            await _send_text(to, _admin_event_confirmation(data), flujo="admin")
+            metrics_service.log(to, "EVENTO_REGISTRADO", flujo="admin", id_evento=event_id)
 
     session_service.clear_session(to)
 
@@ -420,10 +424,27 @@ async def _handle_admin_command(to: str, command: str, text: str):
         await _send_text(to, admin_service.format_recent_requests(), flujo="admin")
     elif command == intent_service.ADMIN_VIEW_METRICS:
         await _send_text(to, metrics_service.format_summary(), flujo="admin")
-    elif command == intent_service.ADMIN_INIT_SHEETS:
-        from app.repositories.sheets_client import ensure_sheets
-        resumen = ensure_sheets()
-        await _send_text(to, f"🗂️ Inicialización de hojas: {resumen}", flujo="admin")
+    elif command == intent_service.ADMIN_CLOSE_REQUEST:
+        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_CERRADA, text)
+        if result:
+            metrics_service.log(
+                to, metrics_service.ADMIN_CERRAR_SOLICITUD,
+                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
+            )
+    elif command == intent_service.ADMIN_MARK_QUOTED:
+        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_COTIZADA, text)
+        if result:
+            metrics_service.log(
+                to, metrics_service.ADMIN_COTIZAR_SOLICITUD,
+                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
+            )
+    elif command == intent_service.ADMIN_DISCARD_REQUEST:
+        result = await admin_service.close_current_request(to, hiring_repo.ESTADO_DESCARTADA, text)
+        if result:
+            metrics_service.log(
+                to, metrics_service.ADMIN_DESCARTAR_SOLICITUD,
+                flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
+            )
     elif command == intent_service.ADMIN_RELEASE:
         await admin_service.release_control(to)
     elif command == intent_service.ADMIN_HELP:

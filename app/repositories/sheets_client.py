@@ -179,7 +179,7 @@ def append_record(sheet_name: str, record: dict) -> bool:
             except Exception as exc:  # noqa: BLE001
                 print(
                     f"[sheets] error guardando en '{sheet_name}' "
-                    f"(intento {attempt}/2): {exc.__class__.__name__}"
+                    f"(intento {attempt}/2): {exc.__class__.__name__}: {str(exc)[:200]}"
                 )
                 _ws_cache.pop(sheet_name, None)
 

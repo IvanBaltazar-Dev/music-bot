@@ -98,5 +98,8 @@ def format_summary() -> str:
         f"🎶 Conoce la agrupación: {_count(today_rows, CONOCE_AGRUPACION)}\n"
         f"📩 Intereses de localidad: {_count(today_rows, INTERES_LOCALIDAD)}\n"
         f"❓ No reconocidos: {_count(today_rows, UNKNOWN)}\n\n"
+        f"Solicitudes cerradas: {_count(today_rows, ADMIN_CERRAR_SOLICITUD)}\n"
+        f"Solicitudes cotizadas: {_count(today_rows, ADMIN_COTIZAR_SOLICITUD)}\n"
+        f"Solicitudes descartadas: {_count(today_rows, ADMIN_DESCARTAR_SOLICITUD)}\n\n"
         f"Total de interacciones registradas: {len(metrics)}"
     )

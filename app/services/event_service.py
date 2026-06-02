@@ -145,6 +145,25 @@ def has_maps(e: dict) -> bool:
     return bool(str(e.get("google_maps_url", "")).strip())
 
 
+def validate_event(event_data: dict) -> tuple[bool, str]:
+    """Valida evento antes de guardar. Devuelve (ok, error_msg)."""
+    if not event_data.get("fecha_evento"):
+        return False, "Falta fecha del evento. Usa DD/MM/YYYY"
+
+    parsed = _parse_date(event_data["fecha_evento"])
+    if parsed is None:
+        return False, f"Fecha '{event_data['fecha_evento']}' inválida. Usa DD/MM/YYYY (ej: 15/06/2026)"
+
+    if not event_data.get("ciudad"):
+        return False, "Falta ciudad del evento"
+
+    maps_url = str(event_data.get("google_maps_url", "")).strip()
+    if maps_url and not (maps_url.startswith("http://") or maps_url.startswith("https://")):
+        return False, "Link de mapa debe empezar con http:// o https://"
+
+    return True, ""
+
+
 def create_event(event_data: dict) -> str:
     """Guarda un evento nuevo (flujo administrativo). Devuelve id_evento."""
     return event_repository.save(event_data)

@@ -667,16 +667,13 @@ async def release_control(admin_number: str) -> bool:
 # ---------------------------------------------------------------------------
 def help_text() -> str:
     return (
-        "Comandos de administrador 🎛️\n\n"
-        "- registrar evento\n"
-        "- ver solicitudes\n"
-        "- métricas\n"
-        "- inicializar hojas\n"
-        "- cerrar solicitud\n"
-        "- marcar cotizada\n"
-        "- descartar solicitud\n"
-        "- soltar control\n"
-        "- ayuda admin"
+        "📋 Comandos disponibles:\n\n"
+        "• Ver solicitudes\n"
+        "• Cerrar solicitud\n"
+        "• Marcar cotizada\n"
+        "• Descartar solicitud\n"
+        "• Soltar control\n"
+        "• Métricas"
     )
 
 
