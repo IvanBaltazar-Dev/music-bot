@@ -1,7 +1,36 @@
 """Servicio de formateo para mensajes y datos."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.repositories import locality_repository
+
+# Perú no usa horario de verano: siempre UTC-5.
+_PERU_TZ = timezone(timedelta(hours=-5))
+_MESES_ABREV = [
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic",
+]
+
+
+def format_datetime_peru(iso_timestamp: str) -> str:
+    """Convierte un timestamp ISO a hora de Perú legible.
+
+    Ejemplo: '2026-06-02T01:25:39+00:00' → '1 jun, 8:25 p. m.'
+    """
+    if not iso_timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(iso_timestamp).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(_PERU_TZ)
+
+        hora = local.hour
+        periodo = "a. m." if hora < 12 else "p. m."
+        hora12 = hora % 12 or 12
+        return f"{local.day} {_MESES_ABREV[local.month - 1]}, {hora12}:{local.minute:02d} {periodo}"
+    except Exception:
+        return str(iso_timestamp)
+
 
 def format_timestamp_readable(iso_timestamp: str) -> str:
     """Convierte ISO timestamp a formato legible para admin.

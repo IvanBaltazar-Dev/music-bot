@@ -52,42 +52,34 @@ def _admin_label(numero: str) -> str:
 
 
 def _extract_last_admin_action(observaciones: str) -> tuple[str, str]:
-    """Extrae la última acción de admin (quién y cuándo) de observaciones.
+    """Extrae la última acción de admin (qué pasó y cuándo) de observaciones.
 
-    Devuelve (admin_label, fecha_hora_compacta) o ("", "") si no hay historial.
-    Ejemplo: observaciones tiene "[2026-06-01T14:30:00+00:00] admin_123 solto control"
-    Devuelve ("admin_123", "2026-06-01 14:30")
+    Devuelve (accion, fecha_legible_peru) o ("", "") si no hay historial.
+    Ejemplo: "[2026-06-02T01:25:39+00:00] Julio (519...) solto control"
+    Devuelve ("Julio (519...) solto control", "1 jun, 8:25 p. m.")
     """
+    from app.services.formatting_service import format_datetime_peru
+
     if not observaciones:
         return "", ""
 
-    lines = str(observaciones).strip().split("\n")
-    if not lines:
+    # Última línea que sea una marca de actividad ([fecha] ...).
+    trace_lines = [ln.strip() for ln in str(observaciones).splitlines()
+                   if ln.strip().startswith("[")]
+    if not trace_lines:
         return "", ""
 
-    last_line = lines[-1].strip()
-    if not last_line.startswith("["):
-        return "", ""
-
+    last_line = trace_lines[-1]
     try:
-        # Formato: [2026-06-01T14:30:00+00:00] {admin_label} {accion}
         end_bracket = last_line.find("]")
         if end_bracket < 1:
             return "", ""
-
         timestamp_str = last_line[1:end_bracket]
         rest = last_line[end_bracket + 1:].strip()
-
         if not rest:
             return "", ""
-
-        # Parsea timestamp ISO a formato compacto
-        from datetime import datetime as dt
-        iso_dt = dt.fromisoformat(timestamp_str)
-        compact_time = iso_dt.strftime("%Y-%m-%d %H:%M")
-
-        return rest, compact_time
-    except Exception:
+        return rest, format_datetime_peru(timestamp_str)
+    except Exception:  # noqa: BLE001
         return "", ""
 
 
@@ -222,7 +214,7 @@ async def send_menu(numero: str) -> None:
     ]
     await _send_admin_list(
         numero,
-        "🎛️ ¡Hola, jefe! ¿Qué hacemos hoy? 🎶",
+        "🎛️ Menú de administrador\n\n¿Qué deseas hacer?",
         options,
         button_text="Abrir menú",
     )
@@ -385,22 +377,13 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     conv_repo.set_state(client, conv_repo.ADMIN_CONTROL, admin_numero=admin)
 
     nombre_cliente = sol.get('nombre_o_dni', client) or client
-    notas = _clean_notes(sol.get("observaciones", ""))
-    transcript = _format_transcript(client, nombre_cliente)
-
-    bloques = [f"🎤 ¡A escena! Ahora atiendes a {nombre_cliente} ({code})"]
-    if transcript:
-        bloques.append("🧵 Aquí se quedó la charla:\n" + transcript)
-    else:
-        bloques.append("🧵 Todavía no hay mensajes previos con este cliente.")
-    bloques.append(f"📞 {client}")
-    if notas:
-        bloques.append(f"📝 {notas}")
-    bloques.append(
-        "Escribe tu respuesta y le llega directo 👇\n"
-        "_(para salir sin enviar nada: *#salir*)_"
+    await _send_admin(
+        admin_number,
+        _context_summary(sol, header=f"Atiendes a {nombre_cliente} ({code})")
+        + "\n\nEscribe tu respuesta y se le envía al cliente.\n"
+        "Para salir sin enviar nada: *#salir*",
+        codigo=code,
     )
-    await _send_admin(admin_number, "\n\n".join(bloques), codigo=code)
 
     # Mensaje para el cliente: corto, alegre y sin revelar lo interno.
     await send_text_message(
@@ -408,6 +391,30 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
         "¡Ya abrimos tu solicitud! 🙌🎶 Te seguimos por aquí mismo en un toque.",
     )
     return client
+
+
+def _context_summary(sol: dict, header: str = "") -> str:
+    """Resumen para que un admin entre con contexto: cliente, nota, última
+    atención (fecha legible) y en qué se quedó la conversación."""
+    client = _only_digits(sol.get("numero_cliente", ""))
+    nombre_cliente = sol.get("nombre_o_dni", client) or client
+    notas = _clean_notes(sol.get("observaciones", ""))
+    accion, cuando = _extract_last_admin_action(sol.get("observaciones", ""))
+    transcript = _format_transcript(client, nombre_cliente)
+
+    bloques = []
+    if header:
+        bloques.append(f"👤 {header}")
+    bloques.append(f"📞 {client}")
+    if notas:
+        bloques.append(f"📝 Nota: {notas}")
+    if accion and cuando:
+        bloques.append(f"🕓 Última atención: {accion} ({cuando})")
+    if transcript:
+        bloques.append("💬 En qué quedó la conversación:\n" + transcript)
+    else:
+        bloques.append("💬 Aún no hay mensajes con este cliente.")
+    return "\n\n".join(bloques)
 
 
 async def switch_control(admin_number: str, code: str) -> str | None:
@@ -525,22 +532,12 @@ async def view_request(admin_number: str, code: str) -> None:
         return
 
     estado = str(sol.get("estado", "-")).strip().upper()
-    admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Nadie todavía 🙋'
-    cliente = sol.get('nombre_o_dni', sol.get('numero_cliente', '-'))
-    notas = _clean_notes(sol.get("observaciones", ""))
-    transcript = _format_transcript(sol.get("numero_cliente", ""), cliente, limit=4)
+    admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'
 
-    bloques = [
-        f"📄 {code}",
-        f"👤 {cliente}\n📞 {sol.get('numero_cliente', '-')}",
-    ]
-    if notas:
-        bloques.append(f"📝 {notas}")
-    if transcript:
-        bloques.append("🧵 Últimos mensajes:\n" + transcript)
-    bloques.append(f"Estado: {_estado_label(estado)}\nResponsable: {admin_label}")
+    resumen = _context_summary(sol, header=f"{sol.get('nombre_o_dni', sol.get('numero_cliente', '-'))} ({code})")
+    estado_block = f"Estado: {_estado_label(estado)}\nResponsable: {admin_label}"
 
-    await _send_admin(admin_number, "\n\n".join(bloques), codigo=code)
+    await _send_admin(admin_number, resumen + "\n\n" + estado_block, codigo=code)
 
     # Las solicitudes finalizadas pueden reabrirse a pendiente, no más.
     finalizada = estado in {
@@ -568,7 +565,7 @@ async def view_request(admin_number: str, code: str) -> None:
         ]
     await _send_admin_list(
         admin_number,
-        f"🎯 {code} — ¿qué hacemos con este?",
+        f"¿Qué deseas hacer con {code}?",
         options,
         button_text="Elegir acción",
         codigo=code,
@@ -590,8 +587,8 @@ async def send_requests_list(admin_number: str) -> None:
     if not requests:
         await _send_admin(
             admin_number,
-            "📭 Bandeja vacía, ¡a relajarse! 😎\n\n"
-            "En cuanto un cliente complete su solicitud, aparece aquí solita.",
+            "📭 No hay solicitudes registradas.\n\n"
+            "Cuando un cliente complete su solicitud, aparecerá aquí.",
         )
         return
 
@@ -608,7 +605,7 @@ async def send_requests_list(admin_number: str) -> None:
 
     await _send_admin_list(
         admin_number,
-        "📋 Tus solicitudes recientes 👇\n\nToca una para ver el chisme completo y qué hacer.",
+        "📋 Solicitudes recientes\n\nElige una para ver el detalle y las acciones.",
         options,
         button_text="Ver solicitudes",
     )
@@ -639,11 +636,11 @@ async def confirm_action(admin_number: str, action: str, code: str) -> None:
     cliente = sol.get("nombre_o_dni") or sol.get("numero_cliente", "-")
     await _send_admin(
         admin_number,
-        f"🤔 A ver, confírmame: ¿{verbo} la solicitud {code}?\n\n"
+        f"Confirma la acción: ¿{verbo} la solicitud {code}?\n\n"
         f"👤 {cliente}",
         buttons=[
-            {"id": intent_service.confirm_id(action, code), "title": "Sí, dale"},
-            {"id": intent_service.BTN_CANCEL, "title": "Mejor no"},
+            {"id": intent_service.confirm_id(action, code), "title": "Sí, confirmar"},
+            {"id": intent_service.BTN_CANCEL, "title": "Cancelar"},
         ],
         codigo=code,
     )
@@ -675,13 +672,13 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
             pass
 
     mensajes_ok = {
-        hiring_repo.ESTADO_CERRADA: f"🎉 ¡Caso cerrado! {code} a la bolsa. Bien ahí 💪",
-        hiring_repo.ESTADO_COTIZADA: f"💰 ¡Cotización enviada! {code} marcada como cotizada.",
-        hiring_repo.ESTADO_DESCARTADA: f"🗑️ Listo, {code} descartada. A por la siguiente 😉",
+        hiring_repo.ESTADO_CERRADA: f"✅ Solicitud {code} cerrada.",
+        hiring_repo.ESTADO_COTIZADA: f"✅ Solicitud {code} marcada como cotizada.",
+        hiring_repo.ESTADO_DESCARTADA: f"✅ Solicitud {code} descartada.",
     }
     await _send_admin(
         admin_number,
-        mensajes_ok.get(final_state, f"Listo ✅ {code} quedó en {_estado_label(final_state)}."),
+        mensajes_ok.get(final_state, f"✅ {code} quedó en {_estado_label(final_state)}."),
         codigo=code,
     )
     print(f"[admin] state_by_code code={code} state={final_state} admin={admin}")
@@ -710,7 +707,7 @@ async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
             pass
     await _send_admin(
         admin_number,
-        f"🟢 {code} de vuelta a la cola. ¡Queda en pausa para después! ⏳",
+        f"🟢 Solicitud {code} marcada como pendiente. Vuelve a la cola de atención.",
         codigo=code,
     )
     return {"codigo_solicitud": code, "estado": hiring_repo.ESTADO_ABIERTA, "numero_cliente": client}
@@ -927,7 +924,7 @@ async def release_control(admin_number: str) -> bool:
     if not client:
         await send_text_message(
             admin_number,
-            "🤷 No estás atendiendo a nadie ahora mismo. ¡Estás libre! 😄",
+            "No estás atendiendo ninguna conversación en este momento.",
         )
         return False
     conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
@@ -943,7 +940,7 @@ async def release_control(admin_number: str) -> bool:
         })
     await send_text_message(
         admin_number,
-        "👋 Saliste de la conversación. El bot toma la posta de nuevo. ¡Gracias, crack! 🎶",
+        "Saliste de la conversación. El bot retoma la atención automática.",
     )
     return True
 

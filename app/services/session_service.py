@@ -673,14 +673,14 @@ def missing_event_fields(d: dict) -> list[str]:
 
 def admin_event_template() -> str:
     return (
-        "📝 ¡A llenar la agenda! 🎉\n\n"
-        "Cópiame esto y complétalo (lo que no tengas, déjalo):\n\n"
+        "📝 Registrar evento\n\n"
+        "Completa esta plantilla (lo que no tengas, déjalo en blanco):\n\n"
         "Ciudad: \n"
         "Lugar: \n"
         "Fecha: 15/06/2026\n"
         "Hora: 9 pm\n"
         "Mapa: https://maps.google.com/...\n\n"
-        "Con *ciudad* y *fecha* ya me arreglo 😉 (*#salir* para cancelar)"
+        "Mínimo se requiere *ciudad* y *fecha*. Escribe *#salir* para cancelar."
     )
 
 
@@ -728,12 +728,12 @@ def start_admin_event(number: str, parsed: dict):
 
 def admin_event_summary(d: dict) -> str:
     return (
-        "👀 Échale un ojo antes de guardar:\n\n"
+        "Revisa el evento antes de guardar:\n\n"
         f"📅 Fecha: {d.get('fecha_evento', '-')}\n"
         f"🕒 Hora: {d.get('hora_inicio', '-')}\n"
         f"📍 Lugar: {d.get('lugar', '-')} — {d.get('ciudad', '-')}\n"
         f"🗺️ Mapa: {d.get('google_maps_url', '-')}\n\n"
-        "¿Le damos? Responde *sí* para guardar o *no* para cancelar 🎵"
+        "¿Confirmas? Responde *sí* para guardar o *no* para cancelar."
     )
 
 
@@ -756,14 +756,14 @@ def _advance_admin_event(session: Session, answer: str):
     if norm in _NEGATIVE:
         clear_session(session.whatsapp)
         return _resp(
-            "Listo, descarté el registro del evento 😊\n"
+            "Registro de evento cancelado.\n"
             "Escribe *registrar evento* cuando quieras intentarlo de nuevo.",
             cancelled=True,
         )
     # Respuesta ambigua: vuelve a pedir confirmación clara.
     return _resp(
-        "No te entendí 🤔 Responde *sí* para guardar el evento o *no* para "
-        "cancelar."
+        "No entendí la respuesta. Responde *sí* para guardar el evento o *no* "
+        "para cancelar."
     )
 
 
