@@ -141,26 +141,23 @@ async def _send_admin(numero: str, texto: str, buttons=None, codigo: str = ""):
 # Notificación de nueva solicitud
 # ---------------------------------------------------------------------------
 def _request_summary(sol: dict) -> str:
+    from app.services.formatting_service import format_timestamp_readable
+
+    code = sol.get('codigo_solicitud', '-')
+    cliente = sol.get('nombre_o_dni', '-')
+    numero = sol.get('numero_cliente', '-')
+    fecha_reg = sol.get('fecha_registro', '-')
+    obs = sol.get('observaciones', '')
+
+    fecha_fmt = format_timestamp_readable(fecha_reg) if fecha_reg else "-"
+
     return (
-        "📩 NUEVA SOLICITUD DE CONTRATACIÓN ABIERTA\n\n"
-        f"Código interno: {sol.get('codigo_solicitud', '-')}\n"
-        f"Fecha de registro: {sol.get('fecha_registro', '-')}\n\n"
-        "Un cliente acaba de solicitar información para una presentación.\n\n"
-        f"Cliente: {sol.get('nombre_o_dni', '-')}\n"
-        f"WhatsApp del cliente: {sol.get('numero_cliente', '-')}\n"
-        f"Número de contacto: {sol.get('numero_contacto', '-')}\n\n"
-        f"Localidad: {sol.get('localidad', '-')}\n"
-        f"Tipo de evento: {sol.get('tipo_evento', '-')}\n"
-        f"Fecha solicitada: {sol.get('fecha_evento', '-')}\n"
-        f"Horario aproximado: {sol.get('horario_evento', '-')}\n"
-        f"Cantidad de personas: {sol.get('cantidad_personas', '-')}\n\n"
-        f"Preferencia de contacto: {sol.get('observaciones', '-')}\n\n"
-        "Último mensaje del cliente:\n"
-        f"\"{sol.get('ultimo_mensaje_cliente', '-')}\"\n\n"
-        "Estado: Pendiente de atención\n"
-        "Administrador asignado: Sin asignar\n\n"
-        "ℹ️ Si tocas *Tomar control*, lo que escribas en este chat se enviará "
-        "directo al cliente. Si quieres revisar antes, toca *Ver solicitud*."
+        f"📩 NUEVA SOLICITUD\n\n"
+        f"{code} • {fecha_fmt}\n\n"
+        f"👤 {cliente}\n"
+        f"📞 {numero}\n"
+        f"Notas: {obs if obs else '(sin notas)'}\n\n"
+        "Escribe aquí tu respuesta para el cliente 👇"
     )
 
 
@@ -300,30 +297,21 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     obs_label, obs_time = _extract_last_admin_action(sol.get("observaciones", ""))
     context_block = ""
     if obs_label and obs_time:
-        context_block = f"\n📋 Contexto previo:\n{obs_label} (el {obs_time})\n"
+        context_block = f"\n📋 {obs_label} (el {obs_time})"
 
+    nombre_cliente = sol.get('nombre_o_dni', client) or client
     await _send_admin(
         admin_number,
-        f"✅ Tomaste el control de la solicitud {code}.{context_block}\n"
-        "Desde ahora, los mensajes que escribas aquí se enviarán directamente "
-        "al cliente.\n\n"
-        f"Cliente: {sol.get('nombre_o_dni', '-')}\n"
-        f"WhatsApp: {sol.get('numero_cliente', '-')}\n"
-        f"Contacto registrado: {sol.get('numero_contacto', '-')}\n\n"
-        f"Evento: {sol.get('tipo_evento', '-')}\n"
-        f"Localidad: {sol.get('localidad', '-')}\n"
-        f"Fecha: {sol.get('fecha_evento', '-')}\n"
-        f"Horario: {sol.get('horario_evento', '-')}\n\n"
-        f"Preferencia de contacto: {sol.get('observaciones', '-')}\n\n"
-        "Puedes responderle cuando gustes.\n"
-        "Para terminar: escribe \"cerrar solicitud\", \"marcar cotizada\" o "
-        "\"descartar solicitud\".\n"
-        "(\"soltar control\" devuelve la conversacion a cola, no la cierra.)",
+        f"✅ Ahora atiendes a {nombre_cliente} ({code}){context_block}\n\n"
+        f"📞 {client}\n"
+        f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
+        "Escribe tu respuesta aquí 👇",
         codigo=code,
     )
+    admin_label = _admin_label(admin)
     await send_text_message(
         client,
-        "Ya tenemos a alguien revisando tu solicitud 🙌\n\n"
+        f"✅ CONVERSACIÓN INICIADA CON {admin_label}\n\n"
         "Desde aquí continuará la atención por este mismo chat.",
     )
     return client
@@ -424,22 +412,19 @@ async def view_request(admin_number: str, code: str) -> None:
     if not sol:
         await send_text_message(admin_number, f"No encontré la solicitud {code}.")
         return
+
+    estado = str(sol.get("estado", "-")).strip().upper()
+    admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'
+    cliente = sol.get('nombre_o_dni', sol.get('numero_cliente', '-'))
+
     await _send_admin(
         admin_number,
-        f"📄 Detalle de solicitud {code}\n\n"
-        f"Cliente: {sol.get('nombre_o_dni', '-')}\n"
-        f"WhatsApp del cliente: {sol.get('numero_cliente', '-')}\n"
-        f"Contacto registrado: {sol.get('numero_contacto', '-')}\n\n"
-        f"Localidad: {sol.get('localidad', '-')}\n"
-        f"Tipo de evento: {sol.get('tipo_evento', '-')}\n"
-        f"Fecha: {sol.get('fecha_evento', '-')}\n"
-        f"Horario: {sol.get('horario_evento', '-')}\n"
-        f"Cantidad de personas: {sol.get('cantidad_personas', '-')}\n\n"
-        f"Preferencia de contacto: {sol.get('observaciones', '-')}\n\n"
-        f"Estado actual: {sol.get('estado', '-')}\n"
-        f"Administrador asignado: {_admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'}\n\n"
-        "Último mensaje:\n"
-        f"\"{sol.get('ultimo_mensaje_cliente', '-')}\"",
+        f"📄 {code}\n\n"
+        f"👤 {cliente}\n"
+        f"📞 {sol.get('numero_cliente', '-')}\n"
+        f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
+        f"Estado: {estado}\n"
+        f"Responsable: {admin_label}",
         codigo=code,
     )
 
@@ -511,17 +496,29 @@ def control_context_for_client(client_number: str) -> dict | None:
 
 
 async def relay_admin_to_client(admin_number: str, client_number: str, texto: str) -> None:
-    await send_text_message(client_number, texto)
+    admin_clean = _only_digits(admin_number)
+    client_clean = _only_digits(client_number)
+
+    # Intenta enviar el mensaje al cliente
+    sent_ok = False
+    try:
+        await send_text_message(client_clean, texto)
+        sent_ok = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error enviando mensaje a cliente {client_clean}: {exc.__class__.__name__}: {str(exc)[:100]}")
+        await _send_admin(admin_clean, f"⚠️ Error al enviar a {client_clean}: {exc.__class__.__name__}")
+
+    # Guarda el registro del intento (aunque haya fallado)
     try:
         msg_repo.save({
-            "numero_usuario": client_number,
+            "numero_usuario": client_clean,
             "direccion": msg_repo.ADMIN_A_CLIENTE,
             "tipo_mensaje": "text",
             "texto": texto,
-            "admin_numero": _only_digits(admin_number),
+            "admin_numero": admin_clean,
         })
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error guardando mensaje admin→cliente: {exc.__class__.__name__}: {str(exc)[:100]}")
 
 
 async def relay_client_to_admin(client_number: str, admin_number: str, texto: str,
@@ -707,10 +704,9 @@ def format_recent_requests() -> str:
         elif estado and estado.upper() == hiring_repo.ESTADO_ABIERTA:
             admin_label = " [⏳ Disponible]"
 
+        cliente = r.get('nombre_o_dni', r.get('numero_cliente', '-'))
         bloques.append(
             f"🔖 {code} ({estado}){admin_label}\n"
-            f"👤 {r.get('nombre_o_dni', '-')} · 📞 {r.get('numero_contacto', '-')}\n"
-            f"📍 {r.get('localidad', '-')} · 🎉 {r.get('tipo_evento', '-')}\n"
-            f"📅 {r.get('fecha_evento', '-')} · 🕒 {r.get('horario_evento', '-')}"
+            f"👤 {cliente}"
         )
     return "📋 Últimas solicitudes:\n\n" + "\n\n".join(bloques)

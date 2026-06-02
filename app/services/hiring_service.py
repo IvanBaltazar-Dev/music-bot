@@ -17,20 +17,13 @@ def crear_solicitud(numero_cliente: str, datos: dict) -> tuple[str, dict]:
     """Crea la solicitud de contratación. Devuelve (codigo, registro)."""
     now = sheets_client.now_iso()
     record = {
-        "fecha_registro": datos.get("fecha_registro") or now,
         "numero_cliente": numero_cliente,
         "nombre_o_dni": datos.get("nombre_o_dni", ""),
-        "numero_contacto": datos.get("numero_contacto", numero_cliente),
-        "localidad": datos.get("localidad", ""),
-        "tipo_evento": datos.get("tipo_evento", ""),
-        "fecha_evento": datos.get("fecha_evento", ""),
-        "horario_evento": datos.get("horario_evento", ""),
-        "cantidad_personas": datos.get("cantidad_personas", ""),
-        "ultimo_mensaje_cliente": datos.get("ultimo_mensaje_cliente", ""),
         "observaciones": datos.get("observaciones", ""),
         "estado": hiring_repo.ESTADO_ABIERTA,
         "modo_atencion": "BOT",
         "origen": "whatsapp",
+        "fecha_registro": datos.get("fecha_registro") or now,
         "fecha_ultima_interaccion": now,
     }
     code = hiring_repo.save(record)
