@@ -8,6 +8,14 @@ from __future__ import annotations
 
 from app.repositories import sheets_client
 from app.repositories.sheets_schema import SHEET_CONTENT
+from app.services import text_utils
+
+# Comparación tolerante: sin tildes, minúsculas, '_' y espacios unificados.
+# Así "Canción", "CANCION", "cancion" o "Descripción larga" coinciden igual.
+_n = text_utils.normalize
+
+# Valores que cuentan como "activo = sí" en la hoja.
+_ACTIVO_TRUE = {"si", "true", "1", "x", "yes", "activo", "verdadero", "ok"}
 
 # Tipos de contenido conocidos
 VIDEO = "VIDEO"
@@ -26,7 +34,7 @@ def get_active() -> list[dict]:
     """Contenidos activos (activo = SI), ordenados por `orden` ascendente."""
     rows = [
         r for r in sheets_client.read_records(SHEET_CONTENT)
-        if str(r.get("activo", "")).strip().upper() in ("SI", "SÍ", "TRUE", "1")
+        if _n(r.get("activo", "")) in _ACTIVO_TRUE
     ]
 
     def _orden(r):
@@ -39,13 +47,13 @@ def get_active() -> list[dict]:
 
 
 def by_type(tipo: str) -> list[dict]:
-    tipo = tipo.upper()
-    return [r for r in get_active() if str(r.get("tipo", "")).strip().upper() == tipo]
+    target = _n(tipo)
+    return [r for r in get_active() if _n(r.get("tipo", "")) == target]
 
 
 def by_types(tipos: set[str]) -> list[dict]:
-    tipos = {t.upper() for t in tipos}
-    return [r for r in get_active() if str(r.get("tipo", "")).strip().upper() in tipos]
+    targets = {_n(t) for t in tipos}
+    return [r for r in get_active() if _n(r.get("tipo", "")) in targets]
 
 
 def get_redes() -> list[dict]:

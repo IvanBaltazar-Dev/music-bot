@@ -173,8 +173,14 @@ def append_record(sheet_name: str, record: dict) -> bool:
             if ws is None:
                 break
             try:
+                # table_range="A1" ancla el append a la tabla que empieza en A1
+                # y alinea los valores desde la columna A. Sin esto, las filas
+                # con celdas finales vacías (p. ej. Métricas) se escriben
+                # "en diagonal" porque la API recorta los vacíos al detectar la
+                # tabla y desplaza la siguiente fila.
                 ws.append_row([row[h] for h in headers],
-                              value_input_option="USER_ENTERED")
+                              value_input_option="USER_ENTERED",
+                              table_range="A1")
                 return True
             except Exception as exc:  # noqa: BLE001
                 print(
