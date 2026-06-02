@@ -32,6 +32,8 @@ HEADERS: dict[str, list[str]] = {
     SHEET_EVENTS: [
         "id_evento", "fecha_evento", "hora_inicio", "hora_fin", "ciudad",
         "lugar", "google_maps_url", "estado", "fecha_creacion", "fecha_actualizacion",
+        # Datos públicos del evento (columnas K-L en la hoja).
+        "precio_entrada", "link_evento",
     ],
     SHEET_HIRING: [
         "codigo_solicitud", "fecha_registro", "estado", "numero_cliente",

@@ -134,11 +134,23 @@ def format_event_block(e: dict) -> str:
     return "\n".join(lineas)
 
 
+def precio_entrada(e: dict) -> str:
+    """Precio de la entrada si se maneja (texto libre, ej 'S/20')."""
+    return str(e.get("precio_entrada", "")).strip()
+
+
+def link_evento(e: dict) -> str:
+    """Link público del evento para compartir / pasar la voz."""
+    return str(e.get("link_evento", "")).strip()
+
+
+def has_price(e: dict) -> bool:
+    return bool(precio_entrada(e))
+
+
 def has_tickets(e: dict) -> bool:
-    return any(
-        str(e.get(k, "")).strip()
-        for k in ("entrada_precio", "entrada_descripcion", "entrada_link")
-    )
+    # Se mantiene por compatibilidad: hay info de entradas si hay precio.
+    return has_price(e)
 
 
 def has_maps(e: dict) -> bool:
@@ -162,6 +174,22 @@ def validate_event(event_data: dict) -> tuple[bool, str]:
         return False, "Link de mapa debe empezar con http:// o https://"
 
     return True, ""
+
+
+def validate_field(field: str, value: str) -> tuple[bool, str, str]:
+    """Valida el nuevo valor de un campo al editar un evento.
+
+    Devuelve (ok, error_msg, valor_normalizado).
+    """
+    v = str(value or "").strip()
+    if not v:
+        return False, "El valor no puede estar vacío.", v
+    if field == "fecha_evento" and _parse_date(v) is None:
+        return False, f"Fecha '{v}' inválida. Usa DD/MM/YYYY (ej: 15/06/2026).", v
+    if field in ("google_maps_url", "link_evento"):
+        if not (v.startswith("http://") or v.startswith("https://")):
+            return False, "El link debe empezar con http:// o https://.", v
+    return True, "", v
 
 
 def create_event(event_data: dict) -> str:

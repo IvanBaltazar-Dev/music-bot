@@ -17,11 +17,12 @@ from app.config import settings
 from app.repositories import (
     admin_repository,
     conversation_repository as conv_repo,
+    event_repository,
     follow_up_repository,
     hiring_request_repository as hiring_repo,
     message_repository as msg_repo,
 )
-from app.services import intent_service
+from app.services import event_service, intent_service
 from app.services.whatsapp_service import (
     send_text_message,
     send_button_message,
@@ -212,6 +213,8 @@ async def send_menu(numero: str) -> None:
     options = [
         {"id": intent_service.MENU_VIEW_REQUESTS, "title": "Ver solicitudes",
          "description": "Lista de clientes y sus estados"},
+        {"id": intent_service.MENU_VIEW_EVENTS, "title": "Ver eventos",
+         "description": "Agenda: ver, editar o cancelar"},
         {"id": intent_service.MENU_REGISTER_EVENT, "title": "Registrar evento",
          "description": "Agendar una presentación"},
         {"id": intent_service.MENU_METRICS, "title": "Métricas",
@@ -786,6 +789,206 @@ async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Administración de eventos (CRUD)
+# ---------------------------------------------------------------------------
+ESTADO_EVENTO_CANCELADO = "CANCELADO"
+_EVENTO_ACTIVO = {"ACTIVO", "CONFIRMADO"}
+
+# Campos editables: clave de la hoja -> etiqueta para el admin.
+EVENT_EDIT_FIELDS = [
+    ("fecha_evento", "📅 Fecha"),
+    ("hora_inicio", "🕒 Hora"),
+    ("lugar", "📍 Lugar"),
+    ("ciudad", "🏙️ Ciudad"),
+    ("google_maps_url", "🗺️ Mapa"),
+    ("precio_entrada", "🎟️ Precio entrada"),
+    ("link_evento", "🔗 Link del evento"),
+]
+_EVENT_FIELD_LABEL = dict(EVENT_EDIT_FIELDS)
+
+
+def _event_is_active(e: dict) -> bool:
+    return str(e.get("estado", "")).strip().upper() in _EVENTO_ACTIVO
+
+
+def _event_row_title(e: dict) -> str:
+    fecha = str(e.get("fecha_evento", "")).strip()
+    ciudad = str(e.get("ciudad", "")).strip()
+    return f"{fecha} · {ciudad}".strip(" ·") or e.get("id_evento", "evento")
+
+
+def _event_detail_text(e: dict) -> str:
+    estado = str(e.get("estado", "-")).strip().upper()
+    estado_lbl = "✅ Activo" if _event_is_active(e) else f"🚫 {estado or 'Cancelado'}"
+    lineas = [
+        f"🗓️ Evento {e.get('id_evento', '-')} — {estado_lbl}",
+        f"📅 Fecha: {e.get('fecha_evento') or '-'}",
+        f"🕒 Hora: {e.get('hora_inicio') or '-'}",
+        f"📍 Lugar: {e.get('lugar') or '-'} — {e.get('ciudad') or '-'}",
+        f"🗺️ Mapa: {e.get('google_maps_url') or '-'}",
+        f"🎟️ Precio: {e.get('precio_entrada') or '(sin precio)'}",
+        f"🔗 Link: {e.get('link_evento') or '-'}",
+    ]
+    return "\n".join(lineas)
+
+
+async def send_events_list(admin_number: str) -> None:
+    """Lista navegable de eventos (activos primero). Tope de 10 filas."""
+    try:
+        eventos = event_repository.get_all()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error leyendo eventos: {exc.__class__.__name__}")
+        eventos = []
+
+    if not eventos:
+        await _send_admin(
+            admin_number,
+            "📭 No hay eventos registrados.\n\n"
+            "Usa *registrar evento* (o el menú) para agendar el primero.",
+        )
+        return
+
+    activos = [e for e in eventos if _event_is_active(e)]
+    cancelados = [e for e in eventos if not _event_is_active(e)]
+    ordenados = activos + cancelados
+    mostrar = ordenados[:_MAX_LIST_ROWS]
+    restantes = len(ordenados) - len(mostrar)
+
+    options = []
+    for e in mostrar:
+        estado = str(e.get("estado", "-")).strip().upper()
+        options.append({
+            "id": intent_service.event_view_id(e.get("id_evento", "")),
+            "title": _event_row_title(e)[:24],
+            "description": ("✅ Activo" if _event_is_active(e) else f"🚫 {estado}"),
+        })
+
+    cuerpo = [f"🗓️ Eventos ({len(activos)} activos de {len(eventos)} en total)"]
+    if restantes > 0:
+        cuerpo.append(f"Mostrando {len(mostrar)}. Quedan {restantes} fuera de la lista.")
+    cuerpo.append("Elige uno para ver el detalle y las acciones.")
+
+    await _send_admin_list(
+        admin_number, "\n\n".join(cuerpo), options, button_text="Ver eventos",
+    )
+
+
+async def view_event(admin_number: str, event_id: str) -> None:
+    """Detalle del evento + acciones (editar / cancelar / reactivar)."""
+    e = event_repository.get_by_id(event_id)
+    if not e:
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return
+
+    await _send_admin(admin_number, _event_detail_text(e), codigo=event_id)
+
+    if _event_is_active(e):
+        options = [
+            {"id": intent_service.event_edit_id(event_id), "title": "✏️ Editar",
+             "description": "Cambiar fecha, hora, lugar, precio, link…"},
+            {"id": intent_service.event_cancel_id(event_id), "title": "🚫 Cancelar evento",
+             "description": "Deja de mostrarse al cliente"},
+        ]
+    else:
+        options = [
+            {"id": intent_service.event_edit_id(event_id), "title": "✏️ Editar",
+             "description": "Corregir datos del evento"},
+        ]
+    await _send_admin_list(
+        admin_number, f"¿Qué deseas hacer con el evento {event_id}?",
+        options, button_text="Elegir acción", codigo=event_id,
+    )
+
+
+async def send_event_field_menu(admin_number: str, event_id: str) -> None:
+    """Muestra los campos editables de un evento."""
+    e = event_repository.get_by_id(event_id)
+    if not e:
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return
+    options = [
+        {"id": intent_service.event_field_id(field, event_id), "title": label[:24]}
+        for field, label in EVENT_EDIT_FIELDS
+    ]
+    await _send_admin_list(
+        admin_number,
+        f"✏️ Editar evento {event_id}\n\n¿Qué campo quieres cambiar?",
+        options, button_text="Elegir campo", codigo=event_id,
+    )
+
+
+def event_field_label(field: str) -> str:
+    return _EVENT_FIELD_LABEL.get(field, field)
+
+
+async def apply_event_field(admin_number: str, event_id: str, field: str, valor: str) -> bool:
+    """Valida y guarda el nuevo valor de un campo. Devuelve True si guardó."""
+    ok, error, valor_norm = event_service.validate_field(field, valor)
+    if not ok:
+        await send_text_message(admin_number, f"❌ {error}\n\nManda el valor de nuevo o escribe *#salir*.")
+        return False
+    if not event_repository.get_by_id(event_id):
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return True  # no reintentar
+    event_repository.update(event_id, {field: valor_norm})
+    e = event_repository.get_by_id(event_id) or {}
+    await _send_admin(
+        admin_number,
+        f"✅ {event_field_label(field)} actualizado.\n\n" + _event_detail_text(e),
+        codigo=event_id,
+    )
+    return True
+
+
+async def confirm_cancel_event(admin_number: str, event_id: str) -> None:
+    e = event_repository.get_by_id(event_id)
+    if not e:
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return
+    await _send_admin(
+        admin_number,
+        f"¿Cancelar el evento {event_id}?\n\n"
+        f"{_event_row_title(e)}\n\n"
+        "Dejará de mostrarse a los clientes (no se borra).",
+        buttons=[
+            {"id": intent_service.event_cancel_ok_id(event_id), "title": "Sí, cancelar"},
+            {"id": intent_service.BTN_CANCEL, "title": "No"},
+        ],
+        codigo=event_id,
+    )
+
+
+async def cancel_event(admin_number: str, event_id: str) -> None:
+    e = event_repository.get_by_id(event_id)
+    if not e:
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return
+    event_repository.update(event_id, {"estado": ESTADO_EVENTO_CANCELADO})
+    await _send_admin(
+        admin_number,
+        f"🚫 Evento {event_id} cancelado. Ya no se muestra a los clientes.",
+        codigo=event_id,
+    )
+
+
+async def notify_ticket_interest(client_number: str, event: dict, nombre: str = "") -> None:
+    """Avisa a los admins que un cliente quiere info de entradas de un evento."""
+    admins = admin_numbers()
+    if not admins:
+        return
+    cliente = nombre or client_number
+    cuerpo = (
+        "🎟️ Un cliente quiere info de ENTRADAS\n\n"
+        f"👤 {cliente}\n📞 {_only_digits(client_number)}\n\n"
+        f"Evento: {_event_row_title(event)}\n"
+        f"({event.get('id_evento', '-')})\n\n"
+        "Aún no hay precio cargado para este evento. Contáctalo o carga el precio."
+    )
+    for numero in admins:
+        await _send_admin(numero, cuerpo)
+
+
+# ---------------------------------------------------------------------------
 # Relevo de mensajes (cliente ⇄ administrador)
 # ---------------------------------------------------------------------------
 def controlling_client_of(admin_number: str) -> str | None:
@@ -1027,6 +1230,7 @@ def help_text() -> str:
         "Comandos rápidos:\n"
         "• *menú* — abre el menú principal\n"
         "• *ver solicitudes* — lista de clientes\n"
+        "• *ver eventos* — agenda: ver, editar o cancelar\n"
         "• *registrar evento* — agendar presentación\n"
         "• *métricas* — resumen de la semana\n\n"
         "⚠️ Cuando estés atendiendo a un cliente, todo lo que escribas le llega "

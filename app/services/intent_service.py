@@ -35,6 +35,7 @@ ADMIN_MARK_QUOTED = "mark_quoted"
 ADMIN_DISCARD_REQUEST = "discard_request"
 ADMIN_HELP = "admin_help"
 ADMIN_MENU = "admin_menu"
+ADMIN_VIEW_EVENTS = "view_events"
 
 # --- IDs de botones: flujos principales ---
 FLOW_SEE_EVENTS = "FLOW_SEE_EVENTS"
@@ -81,9 +82,20 @@ BTN_CANCEL = "BTN_CANCEL_ACTION"
 
 # --- Botones del menú principal de administrador ---
 MENU_VIEW_REQUESTS = "MENU_VIEW_REQUESTS"
+MENU_VIEW_EVENTS = "MENU_VIEW_EVENTS"
 MENU_REGISTER_EVENT = "MENU_REGISTER_EVENT"
 MENU_METRICS = "MENU_METRICS"
 MENU_HELP = "MENU_HELP"
+
+# --- Botones de administración de eventos (llevan el id del evento) ---
+PREFIX_EVENT_VIEW = "BTN_EVENT_VIEW_"        # ver detalle + acciones
+PREFIX_EVENT_EDIT = "BTN_EVENT_EDIT_"        # abrir menú de campos a editar
+PREFIX_EVENT_FIELD = "BTN_EVTFIELD_"          # editar un campo: <campo>_<id>
+PREFIX_EVENT_CANCEL = "BTN_EVENT_CANCEL_"     # pedir confirmación de cancelar
+PREFIX_EVENT_CANCEL_OK = "BTN_EVENT_CANCELOK_"  # confirmar cancelación
+
+# --- Botón del cliente: elegir un evento de la lista de su ciudad ---
+PREFIX_CLIENT_EVENT_PICK = "BTN_EVENTPICK_"   # índice dentro de la lista
 
 
 # Palabras clave por intención (se normalizan al comparar)
@@ -117,6 +129,7 @@ _KEYWORDS = {
 _ADMIN_KEYWORDS = {
     ADMIN_MENU: ["menu", "inicio", "menu admin", "opciones"],
     ADMIN_REGISTER_EVENT: ["registrar evento", "nuevo evento", "crear evento", "agregar evento"],
+    ADMIN_VIEW_EVENTS: ["ver eventos", "ver agenda", "listar eventos", "lista de eventos", "agenda"],
     ADMIN_VIEW_REQUESTS: ["ver solicitudes", "solicitudes", "leads", "cotizaciones"],
     ADMIN_VIEW_METRICS: ["metricas", "reporte", "estadisticas", "resumen"],
     ADMIN_RELEASE: ["soltar control", "liberar control", "soltar", "dejar control", "dejar", "salir"],
@@ -128,9 +141,9 @@ _ADMIN_KEYWORDS = {
 
 # Orden de prioridad al resolver comandos admin (lo más específico primero)
 _ADMIN_PRIORITY = [
-    ADMIN_MENU, ADMIN_REGISTER_EVENT, ADMIN_VIEW_REQUESTS, ADMIN_VIEW_METRICS,
-    ADMIN_CLOSE_REQUEST, ADMIN_MARK_QUOTED, ADMIN_DISCARD_REQUEST,
-    ADMIN_RELEASE, ADMIN_HELP,
+    ADMIN_MENU, ADMIN_REGISTER_EVENT, ADMIN_VIEW_EVENTS, ADMIN_VIEW_REQUESTS,
+    ADMIN_VIEW_METRICS, ADMIN_CLOSE_REQUEST, ADMIN_MARK_QUOTED,
+    ADMIN_DISCARD_REQUEST, ADMIN_RELEASE, ADMIN_HELP,
 ]
 
 # Orden de prioridad al resolver intenciones públicas
@@ -269,6 +282,32 @@ def confirm_id(action: str, code: str) -> str:
     return f"{PREFIX_CONFIRM}{action}_{code}"
 
 
+# --- IDs de botones de eventos (admin) ---
+def event_view_id(event_id: str) -> str:
+    return PREFIX_EVENT_VIEW + event_id
+
+
+def event_edit_id(event_id: str) -> str:
+    return PREFIX_EVENT_EDIT + event_id
+
+
+def event_field_id(field: str, event_id: str) -> str:
+    # Separador '~': los nombres de campo llevan '_' y el id lleva '-'.
+    return f"{PREFIX_EVENT_FIELD}{field}~{event_id}"
+
+
+def event_cancel_id(event_id: str) -> str:
+    return PREFIX_EVENT_CANCEL + event_id
+
+
+def event_cancel_ok_id(event_id: str) -> str:
+    return PREFIX_EVENT_CANCEL_OK + event_id
+
+
+def client_event_pick_id(index: int) -> str:
+    return f"{PREFIX_CLIENT_EVENT_PICK}{index}"
+
+
 def parse_admin_button(button_id: str):
     """Devuelve (accion, codigo) para un botón admin, o None.
 
@@ -282,6 +321,7 @@ def parse_admin_button(button_id: str):
     # Botones del menú principal (sin código asociado)
     menu_actions = {
         MENU_VIEW_REQUESTS: ("menu_view_requests", ""),
+        MENU_VIEW_EVENTS: ("menu_view_events", ""),
         MENU_REGISTER_EVENT: ("menu_register_event", ""),
         MENU_METRICS: ("menu_metrics", ""),
         MENU_HELP: ("menu_help", ""),
@@ -296,6 +336,10 @@ def parse_admin_button(button_id: str):
         action, _, code = rest.partition("_")
         return f"confirm_{action}", code
 
+    # Editar un campo de evento: BTN_EVTFIELD_<campo>_<id> -> ("event_field", "campo_id")
+    if button_id.startswith(PREFIX_EVENT_FIELD):
+        return "event_field", button_id[len(PREFIX_EVENT_FIELD):]
+
     for action, prefix in (
         ("switch_control", PREFIX_SWITCH_CONTROL),
         ("keep_control", PREFIX_KEEP_CONTROL),
@@ -307,6 +351,13 @@ def parse_admin_button(button_id: str):
         ("quote", PREFIX_QUOTE),
         ("discard", PREFIX_DISCARD),
         ("pending", PREFIX_PENDING),
+        # Eventos (admin)
+        ("event_view", PREFIX_EVENT_VIEW),
+        ("event_edit", PREFIX_EVENT_EDIT),
+        ("event_cancel_ok", PREFIX_EVENT_CANCEL_OK),
+        ("event_cancel", PREFIX_EVENT_CANCEL),
+        # Cliente: elegir evento
+        ("client_event_pick", PREFIX_CLIENT_EVENT_PICK),
     ):
         if button_id.startswith(prefix):
             return action, button_id[len(prefix):]

@@ -22,6 +22,7 @@ from app.models.session import (
     STATE_SEE_INTEREST,
     STATE_IDLE,
     STATE_ADMIN_EVENT_COLLECT,
+    STATE_ADMIN_EVENT_EDIT,
     ADMIN_EVENT_STATES,
 )
 from app.repositories import (
@@ -177,20 +178,30 @@ async def _process_see_city(to: str, city_text: str):
         flujo="ver_eventos", ciudad=city_name, mensaje=city_text,
     )
 
-    if events:
-        e = events[0]
+    if len(events) > 1:
+        # Varias presentaciones en la localidad: el cliente elige una.
         session = session_service.get_session(to)
-        session.data["last_event"] = e
+        session.data["city_events"] = events[:10]
         session_service.set_state(to, STATE_IDLE)
 
-        buttons = []
-        if event_service.has_maps(e):
-            buttons.append({"id": intent_service.BTN_HELP_ARRIVE, "title": "Ayúdame a llegar"})
-        if event_service.has_tickets(e):
-            buttons.append({"id": intent_service.BTN_TICKETS, "title": "Quiero entradas"})
-        buttons.append({"id": intent_service.BTN_SHARE, "title": "Pasar la voz"})
-
-        await _send_buttons(to, event_service.format_event_block(e), buttons[:3], flujo="ver_eventos")
+        options = []
+        for i, e in enumerate(events[:10]):
+            fecha = str(e.get("fecha") or e.get("fecha_evento") or "").strip()
+            lugar = str(e.get("lugar", "")).strip()
+            options.append({
+                "id": intent_service.client_event_pick_id(i),
+                "title": (fecha or f"Presentación {i+1}")[:24],
+                "description": (lugar or city_name)[:72],
+            })
+        await _send_menu(
+            to,
+            f"¡Tenemos varias fechas por {city_name}! 🎶🙌\n\nElige la que te interese:",
+            options,
+            button_text="Ver fechas",
+            flujo="ver_eventos",
+        )
+    elif len(events) == 1:
+        await _show_event_to_client(to, events[0])
     else:
         session = session_service.get_session(to)
         session.data["interest_city"] = city_name
@@ -247,6 +258,40 @@ async def _handle_see_input(to: str, text: str, profile_name: str = ""):
 # ---------------------------------------------------------------------------
 # Acciones sobre un evento (botones dinámicos)
 # ---------------------------------------------------------------------------
+async def _show_event_to_client(to: str, e: dict):
+    """Guarda el evento elegido y muestra su bloque + acciones."""
+    session = session_service.get_session(to)
+    session.data["last_event"] = e
+    session_service.set_state(to, STATE_IDLE)
+
+    buttons = []
+    if event_service.has_maps(e):
+        buttons.append({"id": intent_service.BTN_HELP_ARRIVE, "title": "Ayúdame a llegar"})
+    # El botón de entradas siempre aparece: da precio o conecta con un asesor.
+    buttons.append({"id": intent_service.BTN_TICKETS, "title": "Quiero entradas"})
+    buttons.append({"id": intent_service.BTN_SHARE, "title": "Pasar la voz"})
+
+    await _send_buttons(to, event_service.format_event_block(e), buttons[:3], flujo="ver_eventos")
+
+
+async def _pick_city_event(to: str, index_str: str):
+    """El cliente eligió un evento de la lista de su ciudad."""
+    eventos = session_service.get_session(to).data.get("city_events") or []
+    try:
+        idx = int(index_str)
+    except (TypeError, ValueError):
+        idx = -1
+    if 0 <= idx < len(eventos):
+        await _show_event_to_client(to, eventos[idx])
+    else:
+        await _send_text(
+            to,
+            "Esa opción ya no está disponible 🙈 Cuéntame otra vez desde qué "
+            "ciudad nos escribes y reviso la agenda 🙌",
+            flujo="ver_eventos",
+        )
+
+
 async def _event_action(to: str, action: str):
     e = session_service.get_session(to).data.get("last_event")
     if not e:
@@ -255,35 +300,45 @@ async def _event_action(to: str, action: str):
 
     if action == "maps":
         url = str(e.get("google_maps_url", "")).strip()
+        metrics_service.log(to, metrics_service.CONSULTA_UBICACION, flujo="ver_eventos",
+                            id_evento=str(e.get("id") or e.get("id_evento") or ""))
         if url:
             await _send_text(to, f"¡Te llevo de la mano! 🗺️\n\n{url}", flujo="ver_eventos")
         else:
-            await _send_text(to, "Apenas tengamos el mapa listo te lo paso por aquí 🙌")
+            await _send_text(to, "Apenas tengamos el mapa listo te lo paso por aquí 🙌", flujo="ver_eventos")
     elif action == "tickets":
         metrics_service.log(to, metrics_service.CONSULTA_ENTRADAS, flujo="ver_eventos",
                             id_evento=str(e.get("id") or e.get("id_evento") or ""))
-        precio = str(e.get("entrada_precio", "")).strip()
-        desc = str(e.get("entrada_descripcion", "")).strip()
-        link = str(e.get("entrada_link", "")).strip()
-        partes = ["🎟️ Sobre las entradas:\n"]
+        precio = event_service.precio_entrada(e)
+        link = event_service.link_evento(e)
         if precio:
-            partes.append(f"💵 {precio}")
-        if desc:
-            partes.append(desc)
-        if link:
-            partes.append(f"\n👉 {link}")
-        await _send_text(to, "\n".join(partes), flujo="ver_eventos")
+            partes = ["🎟️ ¡Vamos con las entradas! 🎶\n", f"💵 {precio}"]
+            if link:
+                partes.append(f"\n👉 {link}")
+            await _send_text(to, "\n".join(partes), flujo="ver_eventos")
+        else:
+            # Sin precio cargado: avisamos a un asesor para que lo contacte.
+            await _send_text(
+                to,
+                "🎟️ ¡Claro! Para darte el detalle exacto de las entradas, "
+                "un asesor te va a escribir por aquí en un ratito 🙌",
+                flujo="ver_eventos",
+            )
+            try:
+                await admin_service.notify_ticket_interest(to, e)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[conversation] no se pudo avisar interés de entradas: {exc.__class__.__name__}")
     elif action == "share":
-        post = str(e.get("post_url", "")).strip()
+        link = event_service.link_evento(e)
         base = (
             "¡Pasa la voz y vente con tu gente! 🎶🙌\n\n"
             f"📅 {e.get('fecha') or e.get('fecha_evento', '')}\n"
             f"📍 {e.get('lugar', '')} — {e.get('ciudad', '')}"
         )
-        if post:
-            base += f"\n\nLink de publicación:\n{post}"
+        if link:
+            base += f"\n\nComparte este link con tus amigos:\n{link}"
         else:
-            base += "\n\nAún no tengo el link de publicación listo por aquí."
+            base += "\n\n¡Cuéntales a todos! Apenas tengamos el link de la publicación te lo paso por aquí."
         await _send_text(to, base, flujo="ver_eventos")
 
 
@@ -417,6 +472,23 @@ async def _finalize_admin_flow(to: str, resp: dict):
         await _send_text(to, resp["text"], flujo="admin")
 
 
+async def _handle_event_edit_value(to: str, text: str):
+    """Recibe el nuevo valor de un campo de evento y lo guarda."""
+    sess = session_service.get_session(to)
+    event_id = sess.data.get("edit_event_id", "")
+    field = sess.data.get("edit_field", "")
+    if not event_id or not field:
+        session_service.clear_session(to)
+        await admin_service.send_menu(to)
+        return
+    guardado = await admin_service.apply_event_field(to, event_id, field, text)
+    if guardado:
+        # Edición terminada: limpiar sesión y mostrar acciones del evento.
+        session_service.clear_session(to)
+        await admin_service.view_event(to, event_id)
+    # Si no guardó (valor inválido), se mantiene el estado para reintentar.
+
+
 def _admin_event_confirmation(d: dict) -> str:
     return (
         "✅ Evento registrado en la agenda.\n\n"
@@ -451,6 +523,8 @@ async def _handle_admin_command(to: str, command: str, text: str):
         await _send_text(to, resp["text"], flujo="admin")
     elif command == intent_service.ADMIN_VIEW_REQUESTS:
         await admin_service.send_requests_list(to)
+    elif command == intent_service.ADMIN_VIEW_EVENTS:
+        await admin_service.send_events_list(to)
     elif command == intent_service.ADMIN_VIEW_METRICS:
         await _send_text(to, metrics_service.format_summary(), flujo="admin")
     elif command in _TEXT_ACTION:
@@ -503,6 +577,8 @@ async def _handle_admin_button(to: str, action: str, code: str):
     # --- Acciones de menú principal ---
     elif action == "menu_view_requests":
         await admin_service.send_requests_list(to)
+    elif action == "menu_view_events":
+        await admin_service.send_events_list(to)
     elif action == "menu_register_event":
         resp = session_service.begin_admin_event(to)
         await _send_text(to, resp["text"], flujo="admin")
@@ -524,6 +600,27 @@ async def _handle_admin_button(to: str, action: str, code: str):
                 to, _CONFIRM_METRIC.get(verb, ""),
                 flujo="admin", codigo_solicitud=result.get("codigo_solicitud", ""),
             )
+    # --- Acciones de eventos (CRUD) ---
+    elif action == "event_view":
+        await admin_service.view_event(to, code)
+    elif action == "event_edit":
+        await admin_service.send_event_field_menu(to, code)
+    elif action == "event_field":
+        # code = "<campo>~<id_evento>" (separador '~' porque los campos llevan '_')
+        field, _, event_id = code.partition("~")
+        session_service.set_state(to, STATE_ADMIN_EVENT_EDIT)
+        sess = session_service.get_session(to)
+        sess.data = {"edit_event_id": event_id, "edit_field": field}
+        await _send_text(
+            to,
+            f"Escribe el nuevo valor para {admin_service.event_field_label(field)} "
+            f"del evento {event_id}.\n\n(o *#salir* para cancelar)",
+            flujo="admin",
+        )
+    elif action == "event_cancel":
+        await admin_service.confirm_cancel_event(to, code)
+    elif action == "event_cancel_ok":
+        await admin_service.cancel_event(to, code)
     elif action == "cancel":
         await _send_text(to, "Acción cancelada. No se hizo ningún cambio.", flujo="admin")
 
@@ -551,6 +648,10 @@ async def _dispatch_client_button(to: str, button_id: str, profile_name: str) ->
     if button_id == intent_service.BTN_CITY_OTHER:
         session_service.set_state(to, STATE_SEE_CITY)
         await _send_text(to, "¡De una! Cuéntame, ¿desde qué ciudad nos escribes? 🙌", flujo="ver_eventos")
+        return True
+
+    if button_id.startswith(intent_service.PREFIX_CLIENT_EVENT_PICK):
+        await _pick_city_event(to, button_id[len(intent_service.PREFIX_CLIENT_EVENT_PICK):])
         return True
 
     if button_id == intent_service.BTN_HELP_ARRIVE:
@@ -740,12 +841,15 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
 
             command_text = intent_service.strip_hash(text) if is_hash else text
 
-            # Flujo de registro de evento en curso (recoger/confirmar datos).
+            # Flujo de evento en curso (registro o edición).
             admin_session = session_service.get_session(from_number)
             if admin_session.state in ADMIN_EVENT_STATES:
                 if is_hash:
-                    # '#' cancela el registro y libera para ejecutar el comando.
+                    # '#' cancela el flujo y libera para ejecutar el comando.
                     session_service.clear_session(from_number)
+                elif admin_session.state == STATE_ADMIN_EVENT_EDIT:
+                    await _handle_event_edit_value(from_number, text)
+                    return
                 else:
                     resp = session_service.handle_flow(admin_session, text)
                     await _finalize_admin_flow(from_number, resp)

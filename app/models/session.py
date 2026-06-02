@@ -28,6 +28,8 @@ STATE_HIRE_STEP3 = "hire_step3"
 # Paso 1: recoger datos (plantilla). Paso 2: confirmar antes de guardar.
 STATE_ADMIN_EVENT_COLLECT = "admin_event_collect"
 STATE_ADMIN_EVENT_CONFIRM = "admin_event_confirm"
+# Edición de un evento existente: esperando el nuevo valor de un campo.
+STATE_ADMIN_EVENT_EDIT = "admin_event_edit"
 
 SEE_STATES = {
     STATE_SEE_CITY,
@@ -43,6 +45,7 @@ HIRE_STATES = {
 ADMIN_EVENT_STATES = {
     STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_CONFIRM,
+    STATE_ADMIN_EVENT_EDIT,
 }
 
 FLOW_STATES = SEE_STATES | HIRE_STATES | ADMIN_EVENT_STATES
