@@ -69,8 +69,8 @@ HEADERS: dict[str, list[str]] = {
         "mensaje_usuario", "respuesta_bot", "codigo_solicitud", "id_evento",
     ],
     SHEET_CONTENT: [
-        "id_contenido", "tipo", "titulo", "descripcion", "url",
-        "orden", "activo", "fecha_actualizacion",
+        "id_contenido", "categoria", "titulo", "descripcion", "url",
+        "activo", "prioridad", "fecha_actualizacion",
     ],
     SHEET_LOCALITIES: [
         "id_localidad", "nombre_localidad", "nombre_normalizado", "region",

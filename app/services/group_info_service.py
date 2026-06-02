@@ -82,7 +82,10 @@ def redes_text() -> str:
         url = str(r.get("url", "")).strip()
         if not url:
             continue
-        tipo = str(r.get("tipo", "")).strip().upper()
-        label = _RED_LABEL.get(tipo, tipo.title())
+        # En la hoja real, el nombre de la red está en `titulo` (Facebook, TikTok).
+        label = str(r.get("titulo", "")).strip()
+        if not label:
+            tipo = str(r.get("tipo", "") or r.get("categoria", "")).strip().upper()
+            label = _RED_LABEL.get(tipo, tipo.title() or "Red social")
         bloques.append(f"• {label}: {url}")
     return cabecera + "\n".join(bloques)
