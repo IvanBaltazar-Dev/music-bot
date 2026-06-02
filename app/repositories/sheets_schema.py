@@ -37,6 +37,8 @@ HEADERS: dict[str, list[str]] = {
         "codigo_solicitud", "fecha_registro", "estado", "numero_cliente",
         "nombre_o_dni", "admin_asignado", "modo_atencion", "fecha_ultima_interaccion",
         "observaciones", "origen",
+        # Detalles del evento que pidió el cliente (columnas K-N en la hoja).
+        "tipo_evento", "fecha_evento", "horario_evento", "localidad",
     ],
     SHEET_INTEREST: [
         "id_interes", "fecha_hora", "numero_usuario", "nombre",

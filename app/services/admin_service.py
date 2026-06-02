@@ -240,18 +240,9 @@ def _request_summary(sol: dict) -> str:
         f"👤 {cliente}\n📞 {numero}",
     ]
 
-    # Detalles del evento (solo los que el cliente haya indicado)
-    detalle = []
-    if sol.get("tipo_evento"):
-        detalle.append(f"🎉 Tipo: {sol['tipo_evento']}")
-    if sol.get("fecha_evento"):
-        detalle.append(f"📅 Fecha: {sol['fecha_evento']}")
-    if sol.get("horario_evento"):
-        detalle.append(f"🕒 Hora: {sol['horario_evento']}")
-    if sol.get("localidad"):
-        detalle.append(f"📍 Lugar: {sol['localidad']}")
+    detalle = _event_details(sol)
     if detalle:
-        bloques.append("\n".join(detalle))
+        bloques.append(detalle)
 
     if notas:
         bloques.append(f"📝 Nota: {notas}")
@@ -416,27 +407,52 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     return client
 
 
+def _event_details(sol: dict) -> str:
+    """Líneas con lo que pidió el cliente (solo los campos que existan)."""
+    detalle = []
+    if sol.get("tipo_evento"):
+        detalle.append(f"🎉 Tipo: {sol['tipo_evento']}")
+    if sol.get("fecha_evento"):
+        detalle.append(f"📅 Fecha: {sol['fecha_evento']}")
+    if sol.get("horario_evento"):
+        detalle.append(f"🕒 Hora: {sol['horario_evento']}")
+    if sol.get("localidad"):
+        detalle.append(f"📍 Lugar: {sol['localidad']}")
+    return "\n".join(detalle)
+
+
 def _context_summary(sol: dict, header: str = "") -> str:
-    """Resumen para que un admin entre con contexto: cliente, nota, última
-    atención (fecha legible) y en qué se quedó la conversación."""
+    """Resumen para que un admin entre con contexto. Separa claramente:
+    - lo que pidió el cliente (evento + nota),
+    - si ya lo atendió otro asistente (o nadie todavía),
+    - la conversación reciente con el bot (si hay registro)."""
     client = _only_digits(sol.get("numero_cliente", ""))
     nombre_cliente = sol.get("nombre_o_dni", client) or client
     notas = _clean_notes(sol.get("observaciones", ""))
     accion, cuando = _extract_last_admin_action(sol.get("observaciones", ""))
+    detalle = _event_details(sol)
     transcript = _format_transcript(client, nombre_cliente)
 
     bloques = []
     if header:
         bloques.append(f"👤 {header}")
     bloques.append(f"📞 {client}")
+    if detalle:
+        bloques.append(detalle)
     if notas:
         bloques.append(f"📝 Nota: {notas}")
+
+    # 1) Estado de atención por un asistente humano (distinto del bot).
     if accion and cuando:
         bloques.append(f"🕓 Última atención: {accion} ({cuando})")
-    if transcript:
-        bloques.append("💬 En qué quedó la conversación:\n" + transcript)
     else:
-        bloques.append("💬 Aún no hay mensajes con este cliente.")
+        bloques.append("🕓 Todavía ningún asistente lo ha atendido (lo trae el bot).")
+
+    # 2) Conversación con el bot. Solo se muestra si hay registro; si no, no
+    #    afirmamos que el cliente nunca habló (sí completó su solicitud).
+    if transcript:
+        bloques.append("💬 Conversación reciente:\n" + transcript)
+
     return "\n\n".join(bloques)
 
 
