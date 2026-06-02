@@ -13,9 +13,14 @@ Copia los encabezados de abajo, pega en fila 1 de cada hoja en Google Sheets.
 
 ## 1. **Eventos**
 ```
-id_evento	fecha_evento	hora_inicio	hora_fin	ciudad	lugar	google_maps_url	estado	fecha_creacion	fecha_actualizacion
+id_evento	fecha_evento	hora_inicio	hora_fin	ciudad	lugar	google_maps_url	estado	fecha_creacion	fecha_actualizacion	precio_entrada	link_evento
 ```
-**Cambios:** Elimina 10 columnas viejas (provincia, region, entrada_precio, entrada_link, flyer_url, post_url, descripcion_publica, notas_internas, creado_por, entrada_descripcion)
+**12 columnas (A–L).** Las últimas 2 (K–L: precio_entrada, link_evento) son
+datos públicos del evento: se muestran al cliente (precio en "Entradas", link en
+"Pasar la voz"). Agrégalas a la derecha de `fecha_actualizacion`, con esos
+nombres exactos.
+
+**Estados:** ACTIVO/CONFIRMADO = visible al cliente; CANCELADO = oculto.
 
 ---
 
@@ -146,7 +151,7 @@ Elimina estas 4 hojas de tu Google Sheets si existen:
 
 - [ ] Backup de Google Sheets actual (Archivo → Descargar)
 - [ ] Eliminar 4 hojas muertas
-- [ ] Actualizar encabezados de **Eventos** (copiar/pegar)
+- [ ] Actualizar encabezados de **Eventos** (12 cols; agregar K–L: precio_entrada, link_evento)
 - [ ] Actualizar encabezados de **SolicitudesContratacion** (14 cols; agregar K–N: tipo_evento, fecha_evento, horario_evento, localidad)
 - [ ] Actualizar encabezados de **Conversaciones** (copiar/pegar + eliminar 4 cols viejas)
 - [ ] Verificar orden de columnas

@@ -32,13 +32,19 @@ En tu Google Sheets, **ELIMINA** estas hojas si existen:
 ## 📋 HOJAS A MANTENER CON ENCABEZADOS NUEVOS (11)
 
 ### 1. **Eventos**
-**Encabezados NUEVOS (10 columnas):**
+**Encabezados (12 columnas, A–L):**
 ```
-id_evento | fecha_evento | hora_inicio | hora_fin | ciudad | lugar | google_maps_url | estado | fecha_creacion | fecha_actualizacion
+id_evento | fecha_evento | hora_inicio | hora_fin | ciudad | lugar | google_maps_url | estado | fecha_creacion | fecha_actualizacion | precio_entrada | link_evento
 ```
 
+**Columnas K–L (datos públicos del evento):**
+- precio_entrada → precio que ve el cliente en "Entradas" (si está vacío, el bot
+  ofrece avisar a un asesor).
+- link_evento → link para "Pasar la voz" (compartir). Agrégalas a la derecha de
+  `fecha_actualizacion`.
+
 **Columnas a ELIMINAR (si existen):**
-- provincia, region, entrada_precio, entrada_descripcion, entrada_link, flyer_url, post_url, descripcion_publica, notas_internas, creado_por
+- provincia, region, entrada_descripcion, entrada_link, flyer_url, post_url, descripcion_publica, notas_internas, creado_por
 
 ---
 
@@ -160,7 +166,7 @@ id_error | fecha_hora | modulo | numero_usuario | mensaje_usuario | error | stac
 
 | Hoja | Estado | Cambio |
 |------|--------|--------|
-| Eventos | MODIFICA | 10 → 10 cols (elimina 10, agrega 0) |
+| Eventos | MODIFICA | 12 cols (10 base + precio_entrada, link_evento al final) |
 | SolicitudesContratacion | MODIFICA | 17 → 14 cols (quita 7, repone 4 del evento: tipo_evento, fecha_evento, horario_evento, localidad) |
 | Conversaciones | MODIFICA | 10 → 8 cols (elimina 4, agrega 2 nuevas) |
 | InteresesLocalidad | SIN CAMBIOS | 7 cols |
@@ -182,7 +188,7 @@ id_error | fecha_hora | modulo | numero_usuario | mensaje_usuario | error | stac
 - [ ] Eliminar hoja `Usuarios`
 - [ ] Eliminar hoja `NotificacionesAdmin`
 - [ ] Eliminar hoja `Catalogos`
-- [ ] Actualizar hoja `Eventos` (eliminar 10 columnas viejas)
+- [ ] Actualizar hoja `Eventos` (agregar K–L: precio_entrada, link_evento)
 - [ ] Actualizar hoja `SolicitudesContratacion` (quitar numero_contacto, cantidad_personas, ultimo_mensaje_cliente; agregar K–N: tipo_evento, fecha_evento, horario_evento, localidad)
 - [ ] Actualizar hoja `Conversaciones` (eliminar 4, agregar 2)
 - [ ] Verificar que todas las filas de datos sean compatibles
