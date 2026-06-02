@@ -182,7 +182,14 @@ async def _send_admin(numero: str, texto: str, buttons=None, codigo: str = ""):
 
 async def _send_admin_list(numero: str, texto: str, options: list[dict],
                            button_text: str = "Ver opciones", codigo: str = ""):
-    """Envía un menú tipo lista al admin y lo registra."""
+    """Envía un menú tipo lista al admin y lo registra.
+
+    Salvaguarda: WhatsApp solo admite 10 filas por lista. Si llegan más, se
+    recortan (no debería pasar; los llamadores ya limitan) y se deja aviso.
+    """
+    if len(options) > 10:
+        print(f"[admin] lista con {len(options)} filas recortada a 10 (límite de WhatsApp)")
+        options = options[:10]
     await send_list_message(numero, texto, options, button_text=button_text)
     try:
         msg_repo.save({
@@ -614,16 +621,21 @@ async def view_request(admin_number: str, code: str) -> None:
 # ---------------------------------------------------------------------------
 # Lista de solicitudes (navegable)
 # ---------------------------------------------------------------------------
+# WhatsApp limita las listas interactivas a 10 filas en total.
+_MAX_LIST_ROWS = 10
+
+
 async def send_requests_list(admin_number: str) -> None:
-    """Envía una lista navegable de solicitudes recientes. Al elegir una,
-    el admin ve el detalle y las acciones disponibles."""
+    """Envía una lista navegable de solicitudes. Prioriza las pendientes/activas,
+    nunca supera el límite de WhatsApp y avisa si quedan más fuera de la lista."""
     try:
-        requests = hiring_repo.get_recent(limit=9)
+        # Traemos un universo acotado (las más recientes) y priorizamos aquí.
+        todas = hiring_repo.get_recent(limit=200)
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] error leyendo solicitudes: {exc.__class__.__name__}")
-        requests = []
+        todas = []
 
-    if not requests:
+    if not todas:
         await _send_admin(
             admin_number,
             "📭 No hay solicitudes registradas.\n\n"
@@ -631,8 +643,18 @@ async def send_requests_list(admin_number: str) -> None:
         )
         return
 
+    def _is_activa(r) -> bool:
+        return str(r.get("estado", "")).strip().upper() in hiring_repo.ACTIVE_STATES
+
+    activas = [r for r in todas if _is_activa(r)]
+    finalizadas = [r for r in todas if not _is_activa(r)]
+    # Primero lo accionable (pendientes/activas), luego las finalizadas recientes.
+    ordenadas = activas + finalizadas
+    mostrar = ordenadas[:_MAX_LIST_ROWS]
+    restantes = len(ordenadas) - len(mostrar)
+
     options = []
-    for r in requests:
+    for r in mostrar:
         code = r.get("codigo_solicitud", "-")
         estado = str(r.get("estado", "-")).strip().upper()
         cliente = r.get("nombre_o_dni") or r.get("numero_cliente", "-")
@@ -642,9 +664,20 @@ async def send_requests_list(admin_number: str) -> None:
             "description": _estado_label(estado),
         })
 
+    # Encabezado informativo: cuántas pendientes hay y si quedan fuera.
+    cuerpo = [f"📋 Solicitudes ({len(activas)} pendientes de {len(todas)} en total)"]
+    if restantes > 0:
+        cuerpo.append(
+            f"Mostrando {len(mostrar)} (las pendientes primero). "
+            f"Quedan {restantes} fuera: ve resolviéndolas o ciérralas para "
+            "destrabar la lista."
+        )
+        print(f"[admin] requests_list truncada: mostradas={len(mostrar)} restantes={restantes}")
+    cuerpo.append("Elige una para ver el detalle y las acciones.")
+
     await _send_admin_list(
         admin_number,
-        "📋 Solicitudes recientes\n\nElige una para ver el detalle y las acciones.",
+        "\n\n".join(cuerpo),
         options,
         button_text="Ver solicitudes",
     )
