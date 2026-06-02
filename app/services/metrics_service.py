@@ -74,7 +74,7 @@ def _parse(dt_str: str):
 
 
 def format_summary() -> str:
-    """Resumen operativo cálido para administradores."""
+    """Resumen operativo con KPIs para administradores."""
     try:
         metrics = metrics_repository.get_all()
     except Exception as exc:  # noqa: BLE001
@@ -88,18 +88,37 @@ def format_summary() -> str:
         return sum(1 for r in rows if r.get("intencion_detectada") == intent)
 
     usuarios_hoy = len({r.get("numero_usuario") for r in today_rows if r.get("numero_usuario")})
+    saludos = _count(today_rows, GREETING)
+    contratos = _count(today_rows, QUIERO_CONTRATAR)
+    no_reconocidos = _count(today_rows, UNKNOWN)
+    cerradas = _count(today_rows, ADMIN_CERRAR_SOLICITUD)
+    cotizadas = _count(today_rows, ADMIN_COTIZAR_SOLICITUD)
+    descartadas = _count(today_rows, ADMIN_DESCARTAR_SOLICITUD)
 
-    return (
-        "📊 Resumen de Music Bot (hoy)\n\n"
-        f"👥 Usuarios únicos: {usuarios_hoy}\n"
-        f"👋 Saludos: {_count(today_rows, GREETING)}\n"
-        f"🎤 Quiero ir a verlos: {_count(today_rows, QUIERO_IR_A_VERLOS)}\n"
-        f"🤝 Quiero contratarlos: {_count(today_rows, QUIERO_CONTRATAR)}\n"
-        f"🎶 Conoce la agrupación: {_count(today_rows, CONOCE_AGRUPACION)}\n"
-        f"📩 Intereses de localidad: {_count(today_rows, INTERES_LOCALIDAD)}\n"
-        f"❓ No reconocidos: {_count(today_rows, UNKNOWN)}\n\n"
-        f"Solicitudes cerradas: {_count(today_rows, ADMIN_CERRAR_SOLICITUD)}\n"
-        f"Solicitudes cotizadas: {_count(today_rows, ADMIN_COTIZAR_SOLICITUD)}\n"
-        f"Solicitudes descartadas: {_count(today_rows, ADMIN_DESCARTAR_SOLICITUD)}\n\n"
-        f"Total de interacciones registradas: {len(metrics)}"
-    )
+    # Cálculo de KPIs
+    tasa_conversion = f"{int(100 * contratos / saludos)}%" if saludos > 0 else "0%"
+    tasa_cierre = f"{int(100 * cerradas / (cerradas + cotizadas))}%" if (cerradas + cotizadas) > 0 else "0%"
+    tasa_abandono = f"{int(100 * no_reconocidos / saludos)}%" if saludos > 0 else "0%"
+
+    lineas = [
+        "📊 Resumen de Music Bot (hoy)\n",
+        f"👥 Usuarios: {usuarios_hoy}",
+        f"👋 Saludos: {saludos}",
+        f"🎤 Ver eventos: {_count(today_rows, QUIERO_IR_A_VERLOS)}",
+        f"🤝 Contratar: {contratos}",
+        f"🎶 Conocer: {_count(today_rows, CONOCE_AGRUPACION)}",
+        f"📩 Intereses: {_count(today_rows, INTERES_LOCALIDAD)}",
+        f"❓ No reconocidos: {no_reconocidos}",
+        "",
+        "📈 KPIs:",
+        f"  • Conversión: {tasa_conversion} (contratos/saludos)",
+        f"  • Cierre: {tasa_cierre} (cerradas/atendidas)",
+        f"  • Abandono: {tasa_abandono} (no reconocidos/saludos)",
+        "",
+        "🎯 Admin:",
+        f"  • Cerradas: {cerradas}",
+        f"  • Cotizadas: {cotizadas}",
+        f"  • Descartadas: {descartadas}",
+    ]
+
+    return "\n".join(lineas)
