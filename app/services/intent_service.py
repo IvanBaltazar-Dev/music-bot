@@ -24,6 +24,7 @@ INTENT_HIRE = "QUIERO_CONTRATAR"
 INTENT_KNOW_GROUP = "CONOCE_AGRUPACION"
 INTENT_CONTACT = "CONTACTO"          # quiere hablar/que lo contacten
 INTENT_OFF_TOPIC = "FUERA_DE_TEMA"   # ajeno a la agrupación (no se responde)
+INTENT_CLOSING = "DESPEDIDA"         # acuse/cierre: "ok", "gracias", "ya"...
 INTENT_CANCEL = "CANCEL"
 INTENT_UNKNOWN = "UNKNOWN"
 
@@ -131,6 +132,14 @@ _KEYWORDS = {
         "perdi la comunicacion", "como los contacto", "contactarlos",
         "que numero tienen", "su numero", "telefono",
     ],
+    INTENT_CLOSING: [
+        "ok", "oka", "okey", "okay", "ya", "listo", "gracias", "grax",
+        "muchas gracias", "perfecto", "bueno", "vale", "chau", "chao",
+        "adios", "bye", "entendido", "genial", "excelente", "bacan",
+        "nada mas", "eso es todo", "esta bien", "todo bien", "de acuerdo",
+        "ya esta", "hasta luego", "nos vemos", "despues te escribo",
+        "luego te escribo", "ahorita no", "por ahora no",
+    ],
     INTENT_CANCEL: [
         "cancelar", "salir", "reiniciar", "empezar de nuevo", "menu",
     ],
@@ -170,6 +179,7 @@ _INTENT_PRIORITY = [
     INTENT_SEE_EVENTS,
     INTENT_KNOW_GROUP,
     INTENT_CONTACT,
+    INTENT_CLOSING,
     INTENT_GREETING,
 ]
 
@@ -245,6 +255,7 @@ _AI_INTENT_MAP = {
     "CONOCE_AGRUPACION": INTENT_KNOW_GROUP,
     "CONTACTO": INTENT_CONTACT,
     "FUERA_DE_TEMA": INTENT_OFF_TOPIC,
+    "DESPEDIDA": INTENT_CLOSING,
 }
 
 

@@ -27,7 +27,7 @@ _enabled = False
 # Categorías que Gemini puede devolver (coinciden con las intenciones del bot).
 _VALID_INTENTS = {
     "GREETING", "QUIERO_IR_A_VERLOS", "QUIERO_CONTRATAR",
-    "CONOCE_AGRUPACION", "CONTACTO", "FUERA_DE_TEMA", "UNKNOWN",
+    "CONOCE_AGRUPACION", "CONTACTO", "FUERA_DE_TEMA", "DESPEDIDA", "UNKNOWN",
 }
 
 
@@ -97,6 +97,9 @@ def classify_intent(text: str) -> dict:
             "- FUERA_DE_TEMA: cualquier cosa que NO sea sobre ESTA agrupación ni sus "
             "presentaciones/contratación (cultura general, otras agrupaciones, "
             "preguntas personales, chistes, etc.).\n"
+            "- DESPEDIDA: el usuario solo confirma/agradece/cierra y NO pide nada "
+            "más (ej: 'ok', 'gracias', 'ya', 'listo', 'perfecto', 'nada más', "
+            "'después te escribo').\n"
             "- UNKNOWN: no encaja claramente en ninguna.\n\n"
             f"Mensaje: {text}\n\n"
             'Responde SOLO un JSON válido sin markdown: '

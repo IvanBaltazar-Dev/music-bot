@@ -786,6 +786,18 @@ async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = 
         await _start_hire(to)
     elif intent == intent_service.INTENT_KNOW_GROUP:
         await _start_know_group(to)
+    elif intent == intent_service.INTENT_CLOSING:
+        # El usuario solo confirma/agradece y no pide nada más: nos despedimos
+        # con buena onda y SIN volver a mostrar el menú.
+        metrics_service.log(to, "DESPEDIDA", flujo="cierre", mensaje=text)
+        session_service.set_state(to, STATE_IDLE)
+        await _send_text(
+            to,
+            "¡A la orden! 🙌😄 Me quedo por aquí atento como radio prendida 📻🎶\n\n"
+            "Cuando quieras ver presentaciones, contratarnos o lo que sea, me "
+            "escribes y aparezco al toque. ¡Que te vaya bonito! ✨",
+            flujo="cierre",
+        )
     elif intent == intent_service.INTENT_CONTACT:
         await _handle_contact(to, profile_name, text)
     elif intent == intent_service.INTENT_OFF_TOPIC:
