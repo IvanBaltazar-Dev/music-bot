@@ -224,24 +224,47 @@ async def send_menu(numero: str) -> None:
 # Notificación de nueva solicitud
 # ---------------------------------------------------------------------------
 def _request_summary(sol: dict) -> str:
-    from app.services.formatting_service import format_timestamp_readable
+    from app.services.formatting_service import format_datetime_peru
 
     code = sol.get('codigo_solicitud', '-')
     cliente = sol.get('nombre_o_dni', '-')
     numero = sol.get('numero_cliente', '-')
-    fecha_reg = sol.get('fecha_registro', '-')
-    obs = sol.get('observaciones', '')
+    fecha_reg = sol.get('fecha_registro', '')
+    notas = _clean_notes(sol.get('observaciones', ''))
 
-    fecha_fmt = format_timestamp_readable(fecha_reg) if fecha_reg else "-"
+    fecha_fmt = format_datetime_peru(fecha_reg) if fecha_reg else "-"
 
-    return (
-        f"📩 NUEVA SOLICITUD\n\n"
-        f"{code} • {fecha_fmt}\n\n"
-        f"👤 {cliente}\n"
-        f"📞 {numero}\n"
-        f"Notas: {obs if obs else '(sin notas)'}\n\n"
-        "Escribe aquí tu respuesta para el cliente 👇"
-    )
+    bloques = [
+        "📩 NUEVA SOLICITUD",
+        f"{code} • {fecha_fmt}",
+        f"👤 {cliente}\n📞 {numero}",
+    ]
+
+    # Detalles del evento (solo los que el cliente haya indicado)
+    detalle = []
+    if sol.get("tipo_evento"):
+        detalle.append(f"🎉 Tipo: {sol['tipo_evento']}")
+    if sol.get("fecha_evento"):
+        detalle.append(f"📅 Fecha: {sol['fecha_evento']}")
+    if sol.get("horario_evento"):
+        detalle.append(f"🕒 Hora: {sol['horario_evento']}")
+    if sol.get("localidad"):
+        detalle.append(f"📍 Lugar: {sol['localidad']}")
+    if detalle:
+        bloques.append("\n".join(detalle))
+
+    if notas:
+        bloques.append(f"📝 Nota: {notas}")
+
+    # Quién la atendió por última vez (si hay registro previo)
+    accion, cuando = _extract_last_admin_action(sol.get("observaciones", ""))
+    if accion and cuando:
+        bloques.append(f"🕓 Última atención: {accion} ({cuando})")
+    else:
+        bloques.append("🕓 Última atención: aún sin atender")
+
+    bloques.append("Escribe aquí tu respuesta para el cliente 👇")
+    return "\n\n".join(bloques)
 
 
 def _action_buttons(code: str) -> list[dict]:

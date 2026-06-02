@@ -14,7 +14,12 @@ from app.repositories import sheets_client
 
 
 def crear_solicitud(numero_cliente: str, datos: dict) -> tuple[str, dict]:
-    """Crea la solicitud de contratación. Devuelve (codigo, registro)."""
+    """Crea la solicitud de contratación. Devuelve (codigo, registro).
+
+    Nota: los detalles del evento (tipo, fecha, hora, lugar) se adjuntan al
+    registro en memoria para la notificación a los admins. La hoja solo guarda
+    las columnas de su esquema; estas claves extra se ignoran al persistir.
+    """
     now = sheets_client.now_iso()
     record = {
         "numero_cliente": numero_cliente,
@@ -25,6 +30,11 @@ def crear_solicitud(numero_cliente: str, datos: dict) -> tuple[str, dict]:
         "origen": "whatsapp",
         "fecha_registro": datos.get("fecha_registro") or now,
         "fecha_ultima_interaccion": now,
+        # Detalles del evento (para la notificación; no se persisten en la hoja)
+        "tipo_evento": datos.get("tipo_evento", ""),
+        "fecha_evento": datos.get("fecha_evento", ""),
+        "horario_evento": datos.get("horario_evento", ""),
+        "localidad": datos.get("localidad", ""),
     }
     code = hiring_repo.save(record)
     record["codigo_solicitud"] = code
