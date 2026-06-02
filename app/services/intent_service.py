@@ -102,7 +102,7 @@ _ADMIN_KEYWORDS = {
     ADMIN_REGISTER_EVENT: ["registrar evento", "nuevo evento", "crear evento", "agregar evento"],
     ADMIN_VIEW_REQUESTS: ["ver solicitudes", "solicitudes", "leads", "cotizaciones"],
     ADMIN_VIEW_METRICS: ["metricas", "reporte", "estadisticas", "resumen"],
-    ADMIN_RELEASE: ["soltar control", "liberar control", "soltar"],
+    ADMIN_RELEASE: ["soltar control", "liberar control", "soltar", "dejar control", "dejar"],
     ADMIN_CLOSE_REQUEST: ["cerrar solicitud", "cerrar caso", "finalizar solicitud", "finalizar caso"],
     ADMIN_MARK_QUOTED: ["marcar cotizada", "cotizada", "ya se cotizo", "ya cotice", "cliente cotizado"],
     ADMIN_DISCARD_REQUEST: ["descartar solicitud", "descartar caso", "no procede", "cliente no interesado"],

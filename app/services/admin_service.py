@@ -305,7 +305,8 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
         f"✅ Ahora atiendes a {nombre_cliente} ({code}){context_block}\n\n"
         f"📞 {client}\n"
         f"Notas: {sol.get('observaciones', '(sin notas)')}\n\n"
-        "Escribe tu respuesta aquí 👇",
+        "Escribe tu respuesta aquí 👇\n\n"
+        "Para salir: escribe *dejar control* o *soltar*",
         codigo=code,
     )
     admin_label = _admin_label(admin)
@@ -665,12 +666,12 @@ async def release_control(admin_number: str) -> bool:
 def help_text() -> str:
     return (
         "📋 Comandos disponibles:\n\n"
-        "• Ver solicitudes\n"
-        "• Cerrar solicitud\n"
-        "• Marcar cotizada\n"
-        "• Descartar solicitud\n"
-        "• Soltar control\n"
-        "• Métricas"
+        "• Ver solicitudes — ver lista de pendientes\n"
+        "• Dejar control — salir de conversación actual\n"
+        "• Cerrar solicitud — marcar como finalizada\n"
+        "• Marcar cotizada — enviar cotización\n"
+        "• Descartar solicitud — cliente no interesado\n"
+        "• Métricas — ver resumen del día"
     )
 
 
