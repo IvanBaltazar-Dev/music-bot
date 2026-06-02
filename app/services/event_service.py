@@ -49,6 +49,17 @@ def _event_time(e: dict) -> str:
     return str(e.get("hora") or e.get("hora_inicio") or "").strip()
 
 
+def display_date(value) -> str:
+    """Fecha legible (DD/MM/YYYY) desde serial de Sheets, ISO o texto.
+
+    Evita mostrar el número serial crudo (ej: 46188) al admin.
+    """
+    parsed = _parse_date(str(value or ""))
+    if parsed is not None:
+        return parsed.strftime("%d/%m/%Y")
+    return str(value or "").strip()
+
+
 def _event_description(e: dict) -> str:
     return str(e.get("descripcion") or e.get("descripcion_publica") or "").strip()
 

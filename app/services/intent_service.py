@@ -93,6 +93,7 @@ PREFIX_EVENT_EDIT = "BTN_EVENT_EDIT_"        # abrir menú de campos a editar
 PREFIX_EVENT_FIELD = "BTN_EVTFIELD_"          # editar un campo: <campo>_<id>
 PREFIX_EVENT_CANCEL = "BTN_EVENT_CANCEL_"     # pedir confirmación de cancelar
 PREFIX_EVENT_CANCEL_OK = "BTN_EVENT_CANCELOK_"  # confirmar cancelación
+BTN_EVENT_EDIT_OK = "BTN_EVENT_EDITOK"        # confirmar guardar la edición (valor en sesión)
 
 # --- Botón del cliente: elegir un evento de la lista de su ciudad ---
 PREFIX_CLIENT_EVENT_PICK = "BTN_EVENTPICK_"   # índice dentro de la lista
@@ -326,6 +327,7 @@ def parse_admin_button(button_id: str):
         MENU_METRICS: ("menu_metrics", ""),
         MENU_HELP: ("menu_help", ""),
         BTN_CANCEL: ("cancel", ""),
+        BTN_EVENT_EDIT_OK: ("event_edit_ok", ""),
     }
     if button_id in menu_actions:
         return menu_actions[button_id]

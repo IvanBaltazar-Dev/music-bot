@@ -30,6 +30,8 @@ STATE_ADMIN_EVENT_COLLECT = "admin_event_collect"
 STATE_ADMIN_EVENT_CONFIRM = "admin_event_confirm"
 # Edición de un evento existente: esperando el nuevo valor de un campo.
 STATE_ADMIN_EVENT_EDIT = "admin_event_edit"
+# Esperando que el admin confirme el cambio antes de guardarlo.
+STATE_ADMIN_EVENT_EDIT_CONFIRM = "admin_event_edit_confirm"
 
 SEE_STATES = {
     STATE_SEE_CITY,
@@ -46,6 +48,7 @@ ADMIN_EVENT_STATES = {
     STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_CONFIRM,
     STATE_ADMIN_EVENT_EDIT,
+    STATE_ADMIN_EVENT_EDIT_CONFIRM,
 }
 
 FLOW_STATES = SEE_STATES | HIRE_STATES | ADMIN_EVENT_STATES

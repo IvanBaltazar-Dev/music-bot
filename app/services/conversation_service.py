@@ -23,6 +23,7 @@ from app.models.session import (
     STATE_IDLE,
     STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_EDIT,
+    STATE_ADMIN_EVENT_EDIT_CONFIRM,
     ADMIN_EVENT_STATES,
 )
 from app.repositories import (
@@ -473,7 +474,7 @@ async def _finalize_admin_flow(to: str, resp: dict):
 
 
 async def _handle_event_edit_value(to: str, text: str):
-    """Recibe el nuevo valor de un campo de evento y lo guarda."""
+    """Recibe el nuevo valor de un campo, lo valida y pide confirmación."""
     sess = session_service.get_session(to)
     event_id = sess.data.get("edit_event_id", "")
     field = sess.data.get("edit_field", "")
@@ -481,12 +482,52 @@ async def _handle_event_edit_value(to: str, text: str):
         session_service.clear_session(to)
         await admin_service.send_menu(to)
         return
-    guardado = await admin_service.apply_event_field(to, event_id, field, text)
-    if guardado:
-        # Edición terminada: limpiar sesión y mostrar acciones del evento.
+
+    ok, error, valor_norm = event_service.validate_field(field, text)
+    if not ok:
+        # Valor inválido: se mantiene el estado para reintentar.
+        await _send_text(
+            to,
+            f"❌ {error}\n\nManda el valor de nuevo o escribe *#salir* para cancelar.",
+            flujo="admin",
+        )
+        return
+
+    # Guardamos el valor pendiente y pedimos confirmación antes de aplicar.
+    sess.data["edit_pending_value"] = valor_norm
+    session_service.set_state(to, STATE_ADMIN_EVENT_EDIT_CONFIRM)
+    await admin_service.confirm_event_field(to, event_id, field, valor_norm)
+
+
+async def _apply_pending_event_edit(to: str):
+    """Aplica el cambio confirmado del campo de evento."""
+    sess = session_service.get_session(to)
+    event_id = sess.data.get("edit_event_id", "")
+    field = sess.data.get("edit_field", "")
+    valor = sess.data.get("edit_pending_value", "")
+    if not event_id or not field:
         session_service.clear_session(to)
-        await admin_service.view_event(to, event_id)
-    # Si no guardó (valor inválido), se mantiene el estado para reintentar.
+        await admin_service.send_menu(to)
+        return
+    await admin_service.apply_event_field(to, event_id, field, valor)
+    session_service.clear_session(to)
+    await admin_service.view_event(to, event_id)
+
+
+async def _handle_event_edit_confirm_text(to: str, text: str):
+    """El admin respondió por texto (no botón) en la confirmación de edición."""
+    norm = intent_service.normalize(text)
+    if norm in {"si", "sí", "ok", "dale", "confirmar", "guardar", "ya"}:
+        await _apply_pending_event_edit(to)
+    elif norm in {"no", "cancelar", "cancela", "mejor no"}:
+        session_service.clear_session(to)
+        await _send_text(to, "Listo, no guardé el cambio. 👍", flujo="admin")
+    else:
+        await _send_text(
+            to,
+            "¿Guardo el cambio? Responde *sí* o *no* (o usa los botones).",
+            flujo="admin",
+        )
 
 
 def _admin_event_confirmation(d: dict) -> str:
@@ -621,7 +662,11 @@ async def _handle_admin_button(to: str, action: str, code: str):
         await admin_service.confirm_cancel_event(to, code)
     elif action == "event_cancel_ok":
         await admin_service.cancel_event(to, code)
+    elif action == "event_edit_ok":
+        await _apply_pending_event_edit(to)
     elif action == "cancel":
+        # Si había una edición a medias, la descartamos.
+        session_service.clear_session(to)
         await _send_text(to, "Acción cancelada. No se hizo ningún cambio.", flujo="admin")
 
 
@@ -849,6 +894,9 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
                     session_service.clear_session(from_number)
                 elif admin_session.state == STATE_ADMIN_EVENT_EDIT:
                     await _handle_event_edit_value(from_number, text)
+                    return
+                elif admin_session.state == STATE_ADMIN_EVENT_EDIT_CONFIRM:
+                    await _handle_event_edit_confirm_text(from_number, text)
                     return
                 else:
                     resp = session_service.handle_flow(admin_session, text)

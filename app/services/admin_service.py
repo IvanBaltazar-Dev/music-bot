@@ -812,9 +812,16 @@ def _event_is_active(e: dict) -> bool:
 
 
 def _event_row_title(e: dict) -> str:
-    fecha = str(e.get("fecha_evento", "")).strip()
+    fecha = event_service.display_date(e.get("fecha_evento", ""))
     ciudad = str(e.get("ciudad", "")).strip()
     return f"{fecha} · {ciudad}".strip(" ·") or e.get("id_evento", "evento")
+
+
+def _event_field_display(e: dict, field: str) -> str:
+    """Valor actual legible de un campo (fecha como DD/MM/YYYY, no serial)."""
+    if field == "fecha_evento":
+        return event_service.display_date(e.get("fecha_evento", ""))
+    return str(e.get(field, "") or "").strip()
 
 
 def _event_detail_text(e: dict) -> str:
@@ -822,7 +829,7 @@ def _event_detail_text(e: dict) -> str:
     estado_lbl = "✅ Activo" if _event_is_active(e) else f"🚫 {estado or 'Cancelado'}"
     lineas = [
         f"🗓️ Evento {e.get('id_evento', '-')} — {estado_lbl}",
-        f"📅 Fecha: {e.get('fecha_evento') or '-'}",
+        f"📅 Fecha: {event_service.display_date(e.get('fecha_evento')) or '-'}",
         f"🕒 Hora: {e.get('hora_inicio') or '-'}",
         f"📍 Lugar: {e.get('lugar') or '-'} — {e.get('ciudad') or '-'}",
         f"🗺️ Mapa: {e.get('google_maps_url') or '-'}",
@@ -830,6 +837,27 @@ def _event_detail_text(e: dict) -> str:
         f"🔗 Link: {e.get('link_evento') or '-'}",
     ]
     return "\n".join(lineas)
+
+
+async def confirm_event_field(admin_number: str, event_id: str, field: str, nuevo_valor: str) -> None:
+    """Muestra el cambio propuesto y pide confirmación antes de guardar."""
+    e = event_repository.get_by_id(event_id)
+    if not e:
+        await send_text_message(admin_number, f"No encontré el evento {event_id}.")
+        return
+    actual = _event_field_display(e, field)
+    await _send_admin(
+        admin_number,
+        f"Vas a cambiar {event_field_label(field)} del evento {event_id}:\n\n"
+        f"Antes: {actual or '(vacío)'}\n"
+        f"Ahora: {nuevo_valor}\n\n"
+        "¿Confirmas el cambio?",
+        buttons=[
+            {"id": intent_service.BTN_EVENT_EDIT_OK, "title": "Sí, guardar"},
+            {"id": intent_service.BTN_CANCEL, "title": "Cancelar"},
+        ],
+        codigo=event_id,
+    )
 
 
 async def send_events_list(admin_number: str) -> None:
