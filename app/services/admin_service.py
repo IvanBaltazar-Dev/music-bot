@@ -374,8 +374,7 @@ async def notify_new_request(sol: dict) -> dict:
     for numero in admins:
         ok = False
         try:
-            ok = await _send_admin(numero, texto, buttons=buttons, codigo=code)
-            if not ok and settings.ADMIN_NOTIFICATION_TEMPLATE_NAME:
+            if settings.ADMIN_NOTIFICATION_TEMPLATE_NAME:
                 template_result = await send_template_message(
                     numero,
                     settings.ADMIN_NOTIFICATION_TEMPLATE_NAME,
@@ -389,6 +388,10 @@ async def notify_new_request(sol: dict) -> dict:
                     language=settings.ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE,
                 )
                 ok = template_result is not None
+            else:
+                ok = await _send_admin(
+                    numero, texto, buttons=buttons, codigo=code
+                )
         except Exception as exc:  # noqa: BLE001
             print(
                 f"[admin] notification_exception code={code or '-'} "

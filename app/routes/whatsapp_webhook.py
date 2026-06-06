@@ -3,7 +3,12 @@ import json
 from fastapi import APIRouter, Request, Query, HTTPException
 
 from app.config import settings
-from app.security import constant_time_equals, verify_meta_signature
+from app.security import (
+    constant_time_equals,
+    mask_identifier,
+    sanitize_text,
+    verify_meta_signature,
+)
 from app.services.conversation_service import handle_incoming_message
 from app.services import whatsapp_service
 
@@ -68,6 +73,36 @@ def _extract_message(body: dict):
     return from_number, "", "", profile_name
 
 
+def _log_delivery_statuses(body: dict) -> int:
+    """Registra estados asíncronos de Meta: sent, delivered, read o failed."""
+    count = 0
+    for entry in body.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for status in value.get("statuses", []):
+                count += 1
+                state = str(status.get("status", "") or "").lower()
+                recipient = mask_identifier(status.get("recipient_id", ""))
+                message_id = mask_identifier(status.get("id", ""), visible=8)
+                error_parts = []
+                for error in status.get("errors") or []:
+                    code = error.get("code", "")
+                    title = sanitize_text(error.get("title", ""), limit=100)
+                    detail = sanitize_text(
+                        (error.get("error_data") or {}).get("details", ""),
+                        limit=180,
+                    )
+                    error_parts.append(
+                        f"code={code} title={title} detail={detail}"
+                    )
+                suffix = f" errors={' | '.join(error_parts)}" if error_parts else ""
+                print(
+                    f"[whatsapp] delivery_status={state or '-'} "
+                    f"to={recipient or '-'} message={message_id or '-'}{suffix}"
+                )
+    return count
+
+
 @router.post("")
 async def receive_message(request: Request):
     raw_body = await request.body()
@@ -82,6 +117,8 @@ async def receive_message(request: Request):
         return {"status": "ignored", "reason": "invalid_body"}
 
     try:
+        status_count = _log_delivery_statuses(body)
+
         # Responder SIEMPRE desde el número que recibió el mensaje.
         pnid = _extract_phone_number_id(body)
         if pnid:
@@ -92,7 +129,10 @@ async def receive_message(request: Request):
         from_number, text, button_id, profile_name = _extract_message(body)
 
         if not from_number or (not text and not button_id):
-            return {"status": "ignored", "reason": "no_actionable_message"}
+            return {
+                "status": "received" if status_count else "ignored",
+                "reason": "delivery_status" if status_count else "no_actionable_message",
+            }
 
         await handle_incoming_message(
             from_number,
