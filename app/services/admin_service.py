@@ -539,7 +539,8 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     if not ok:
         await send_text_message(
             admin_number,
-            f"⚠️ No se pudo establecer control sobre {code}. Intenta de nuevo o revisa tu conexión.",
+            f"⚠️ Error de conexión: no se pudo establecer control sobre {code}.\n\n"
+            f"Verifica tu conexión a internet e intenta de nuevo.",
         )
         return None
 
@@ -648,7 +649,8 @@ async def switch_control(admin_number: str, code: str) -> str | None:
             if not ok:
                 await _send_admin(
                     admin_number,
-                    f"⚠️ No se pudo liberar la solicitud anterior {current_code}. Intenta de nuevo.",
+                    f"⚠️ Error de conexión: no se pudo liberar la solicitud anterior {current_code}.\n\n"
+                    f"Escribe *#salir* para intentar liberar manualmente, luego intenta cambiar de solicitud.",
                     codigo=code,
                 )
                 return None
@@ -699,7 +701,8 @@ async def reply_later(admin_number: str, code: str) -> None:
     if not ok:
         await _send_admin(
             admin_number,
-            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            f"⚠️ Error de conexión: no se pudo dejar {code} pendiente.\n\n"
+            f"Intenta de nuevo. Si sigue fallando, escribe *#salir* para liberar la conversación.",
             codigo=code,
         )
         return
@@ -970,7 +973,9 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
     if not ok:
         await _send_admin(
             admin_number,
-            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            f"⚠️ Error de conexión: no se pudo guardar el cambio de {code}.\n\n"
+            f"Sigue {_estado_label(final_state)} en el sistema. Intenta de nuevo en un momento. "
+            f"Si sigue fallando, escribe *#salir* para intentar liberar la conversación.",
             codigo=code,
         )
         return None
@@ -1014,7 +1019,8 @@ async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
     if not ok:
         await _send_admin(
             admin_number,
-            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            f"⚠️ Error de conexión: no se pudo marcar {code} como pendiente.\n\n"
+            f"Intenta de nuevo en un momento. Si sigue fallando, escribe *#salir* para liberar la conversación.",
             codigo=code,
         )
         return None
@@ -1519,7 +1525,8 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
     if not ok:
         await _send_admin(
             admin_number,
-            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            f"⚠️ Error de conexión: no se pudo cerrar {code}.\n\n"
+            f"Intenta de nuevo en un momento. Si sigue fallando, escribe *#salir* para liberar la conversación.",
             codigo=code,
         )
         return None
