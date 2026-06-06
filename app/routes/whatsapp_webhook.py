@@ -77,6 +77,7 @@ def _log_delivery_statuses(body: dict) -> int:
     """Registra estados asíncronos de Meta: sent, delivered, read o failed."""
     count = 0
     for entry in body.get("entry", []):
+        waba_id = str(entry.get("id", "") or "")
         for change in entry.get("changes", []):
             value = change.get("value", {})
             for status in value.get("statuses", []):
@@ -98,7 +99,8 @@ def _log_delivery_statuses(body: dict) -> int:
                 suffix = f" errors={' | '.join(error_parts)}" if error_parts else ""
                 print(
                     f"[whatsapp] delivery_status={state or '-'} "
-                    f"to={recipient or '-'} message={message_id or '-'}{suffix}"
+                    f"waba={waba_id or '-'} to={recipient or '-'} "
+                    f"message={message_id or '-'}{suffix}"
                 )
     return count
 
