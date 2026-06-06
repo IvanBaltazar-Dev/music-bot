@@ -7,6 +7,7 @@ Google Sheets), pero persiste en las tablas CRM de Supabase.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import httpx
@@ -15,9 +16,46 @@ from app.config import settings
 from app.security import sanitize_text
 from app.repositories import sheets_schema
 
+# Estados terminales de una solicitud (cierran el vínculo activo con el hilo).
+_TERMINAL_STATUSES = {"CERRADA", "COTIZADA", "DESCARTADA"}
+
 
 def _only_digits(value: str) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _now_iso() -> str:
+    """Timestamp ISO-8601 con zona UTC (apto para columnas timestamptz)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _to_iso_date(value) -> str | None:
+    """Convierte una fecha en texto (DD/MM/YYYY, ISO o serial de Sheets) a
+    'YYYY-MM-DD' para la columna `date`. Devuelve None si no se puede parsear."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    s_date = s.split("T")[0].split(" ")[0]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s_date, fmt).date().isoformat()
+        except ValueError:
+            continue
+    try:  # Serial de Google Sheets (días desde 1899-12-30).
+        serial = float(s)
+        if serial > 0:
+            return (datetime(1899, 12, 30) + timedelta(days=serial)).date().isoformat()
+    except ValueError:
+        pass
+    return None
+
+
+def _transition_timestamp(existing: str, status: str, target: str) -> str | None:
+    """Preserva un timestamp de transición ya existente; si no hay y el estado
+    coincide con `target`, sella ahora. Evita re-sellar en cada actualización."""
+    if existing:
+        return existing
+    return _now_iso() if status == target else None
 
 
 def _bool_to_sheet(value) -> str:
@@ -102,15 +140,31 @@ def _patch(table: str, filters: dict, payload: dict) -> bool:
     return bool(rows)
 
 
-def _ensure_client(phone: str, name: str = "") -> dict:
+def _ensure_client(phone: str, name: str = "", profile_name: str = "") -> dict:
+    """Obtiene (o crea) el cliente. Cuando llega información nueva (nombre dado
+    en una solicitud o nombre de perfil de WhatsApp) refresca el registro y la
+    marca de última actividad. Sin datos nuevos no escribe (evita writes inútiles).
+    """
     digits = _only_digits(phone)
-    payload = {"phone": digits, "last_seen_at": "now()"}
-    if name:
-        payload["display_name"] = name
     found = _select_one("clients", params={"phone": f"eq.{digits}"})
     if found:
+        patch: dict = {}
+        # No pisamos un display_name ya guardado (suele ser el nombre/DNI real).
+        if name and not str(found.get("display_name") or "").strip():
+            patch["display_name"] = name
+        if profile_name and str(found.get("profile_name") or "") != profile_name:
+            patch["profile_name"] = profile_name
+        if patch:
+            patch["last_seen_at"] = _now_iso()
+            if found.get("id"):
+                _patch("clients", {"id": found["id"]}, patch)
+            found.update(patch)
         return found
-    return _insert("clients", {"phone": digits, "display_name": name or None}) or {"phone": digits}
+    return _insert("clients", {
+        "phone": digits,
+        "display_name": name or None,
+        "profile_name": profile_name or None,
+    }) or {"phone": digits}
 
 
 def _ensure_thread(phone: str, client_id: str | None = None) -> dict | None:
@@ -197,7 +251,7 @@ def _from_conversation(r: dict) -> dict:
 
 def _to_conversation(r: dict) -> dict:
     phone = _only_digits(r.get("numero_usuario", ""))
-    client = _ensure_client(phone)
+    client = _ensure_client(phone, profile_name=r.get("profile_name", ""))
     admin_phone = _only_digits(r.get("admin_numero", ""))
     admin = _admin_by_phone(admin_phone) if admin_phone else None
     payload = {
@@ -208,6 +262,8 @@ def _to_conversation(r: dict) -> dict:
         "state": r.get("estado_conversacion") or "BOT_ACTIVO",
         "current_admin_id": (admin or {}).get("id"),
         "current_admin_phone": admin_phone or None,
+        # Cada upsert ocurre por una interacción real -> sella la última actividad.
+        "last_interaction_at": r.get("fecha_ultima_interaccion") or _now_iso(),
     }
     if any(k in r for k in ("flujo_actual", "paso_actual", "datos_temporales_json")):
         raw_data = r.get("datos_temporales_json", "")
@@ -244,6 +300,12 @@ def _from_hiring(r: dict) -> dict:
         "horario_evento": r.get("event_time_text", "") or "",
         "localidad": r.get("locality", "") or "",
         "ultimo_mensaje_cliente": r.get("last_client_message", "") or "",
+        # Marcas de transición (para preservarlas al volver a actualizar la fila).
+        "fecha_cotizacion": r.get("quoted_at", "") or "",
+        "fecha_cierre": r.get("closed_at", "") or "",
+        "fecha_descarte": r.get("discarded_at", "") or "",
+        "monto_cotizado": r.get("quote_amount", "") or "",
+        "moneda_cotizacion": r.get("quote_currency", "") or "",
     }
 
 
@@ -253,6 +315,8 @@ def _to_hiring(r: dict) -> dict:
     thread = _ensure_thread(phone, client.get("id"))
     admin_phone = _only_digits(r.get("admin_asignado", ""))
     admin = _admin_by_phone(admin_phone) if admin_phone else None
+    status = r.get("estado") or "ABIERTA"
+    quote_amount = str(r.get("monto_cotizado", "") or "").strip()
     payload = {
         "code": r.get("codigo_solicitud") or None,
         "client_id": client.get("id"),
@@ -262,7 +326,7 @@ def _to_hiring(r: dict) -> dict:
         "contact_phone": _only_digits(r.get("numero_contacto", "")) or phone or None,
         "assigned_admin_id": (admin or {}).get("id"),
         "assigned_admin_phone": admin_phone or None,
-        "status": r.get("estado") or "ABIERTA",
+        "status": status,
         "attention_mode": r.get("modo_atencion") or "BOT",
         "origin": r.get("origen") or "whatsapp",
         "event_type": r.get("tipo_evento") or None,
@@ -271,6 +335,14 @@ def _to_hiring(r: dict) -> dict:
         "locality": r.get("localidad") or None,
         "last_client_message": r.get("ultimo_mensaje_cliente") or None,
         "notes": r.get("observaciones") or None,
+        # Última actividad: viene de hiring_repo.update / save; si falta, ahora.
+        "last_interaction_at": r.get("fecha_ultima_interaccion") or _now_iso(),
+        # Marcas de transición: se sellan una vez al pasar al estado terminal.
+        "quoted_at": _transition_timestamp(r.get("fecha_cotizacion", ""), status, "COTIZADA"),
+        "closed_at": _transition_timestamp(r.get("fecha_cierre", ""), status, "CERRADA"),
+        "discarded_at": _transition_timestamp(r.get("fecha_descarte", ""), status, "DESCARTADA"),
+        "quote_amount": float(quote_amount) if quote_amount.replace(".", "", 1).isdigit() else None,
+        "quote_currency": r.get("moneda_cotizacion") or None,
     }
     return payload
 
@@ -342,6 +414,8 @@ def _to_event(r: dict) -> dict:
     return {
         "legacy_id": r.get("id_evento") or None,
         "event_date_text": r.get("fecha_evento") or None,
+        # Columna `date` real (habilita orden/filtrado por fecha en consultas).
+        "event_date": _to_iso_date(r.get("fecha_evento")),
         "start_time": r.get("hora_inicio") or None,
         "end_time": r.get("hora_fin") or None,
         "city": r.get("ciudad") or "",
@@ -564,12 +638,43 @@ def read_records(sheet_name: str) -> list[dict]:
     return [from_db(r) for r in rows]
 
 
+def _link_thread_to_request(thread_id, request_id, status) -> None:
+    """Apunta conversation_threads.current_request_id a la solicitud activa.
+    Es una escritura de mejora: si falla, no debe romper la operación principal."""
+    if not thread_id or not request_id or status in _TERMINAL_STATUSES:
+        return
+    try:
+        _patch("conversation_threads", {"id": thread_id}, {"current_request_id": request_id})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[supabase] no se pudo enlazar hilo->solicitud: {exc.__class__.__name__}")
+
+
+def _sync_thread_request_on_update(thread_id, code, status) -> None:
+    """Mantiene current_request_id al día tras actualizar una solicitud: lo
+    limpia si quedó en estado terminal, o lo (re)enlaza si sigue activa."""
+    if not thread_id:
+        return
+    try:
+        if status in _TERMINAL_STATUSES:
+            _patch("conversation_threads", {"id": thread_id}, {"current_request_id": None})
+        elif status:
+            req = _request_by_code(code) if code else None
+            if req and req.get("id"):
+                _patch("conversation_threads", {"id": thread_id}, {"current_request_id": req["id"]})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[supabase] no se pudo sincronizar hilo->solicitud: {exc.__class__.__name__}")
+
+
 def append_record(sheet_name: str, record: dict) -> bool:
     if sheet_name not in _MAP:
         return False
     table, _, to_db, _ = _MAP[sheet_name]
     payload = {k: v for k, v in to_db(record).items() if v is not None}
-    _insert(table, payload)
+    inserted = _insert(table, payload)
+    if table == "hiring_requests" and isinstance(inserted, dict):
+        _link_thread_to_request(
+            payload.get("thread_id"), inserted.get("id"), payload.get("status")
+        )
     return True
 
 
@@ -605,4 +710,9 @@ def update_record(sheet_name: str, key_col: str, key_val: str, updates: dict) ->
     merged.update(updates)
     payload = {k: v for k, v in to_db(merged).items() if v is not None}
     value = _only_digits(key_val) if db_col.endswith("phone") or db_col in {"client_phone", "phone"} else str(key_val).strip()
-    return _patch(table, {db_col: quote(value, safe="")}, payload)
+    result = _patch(table, {db_col: quote(value, safe="")}, payload)
+    if result and table == "hiring_requests":
+        _sync_thread_request_on_update(
+            payload.get("thread_id"), payload.get("code"), payload.get("status")
+        )
+    return result

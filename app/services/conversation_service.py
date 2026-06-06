@@ -929,7 +929,12 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
     # 0) Asegurar conversación y sincronizar el flujo antes de clasificar.
     is_admin = admin_service.is_admin(from_number)
     try:
-        conv_repo.upsert(from_number, {})  # crea/actualiza la fila de Conversaciones
+        # Pasamos el nombre de perfil de WhatsApp para enriquecer el cliente
+        # (se persiste en la capa Supabase: clients.profile_name + last_seen_at).
+        conv_repo.upsert(
+            from_number,
+            {"profile_name": profile_name} if profile_name else {},
+        )
     except Exception:  # noqa: BLE001
         pass
 
