@@ -27,7 +27,9 @@ from app.models.session import (
     STATE_ADMIN_EVENT_CONFIRM,
     HIRE_STATES,
     ADMIN_EVENT_STATES,
+    FLOW_STATES,
 )
+from app.repositories import conversation_repository as conv_repo
 from app.services import gemini_service, locality_service, text_utils
 
 # --- Almacén de sesiones en memoria ---
@@ -132,7 +134,7 @@ _STOPWORDS = {
     "y", "o", "seria", "sera", "es", "mi", "por", "ahi", "alla", "con", "que",
     "se", "presentacion", "evento", "fiesta", "ciudad", "localidad", "provincia",
     "distrito", "tipo", "fecha", "hora", "horas", "dia", "aprox", "aproximada",
-    "a", "al", "las", "los", "pm", "am", "hoy", "manana", "pasado", "proximo",
+    "a", "al", "las", "los", "desde", "pm", "am", "hoy", "manana", "pasado", "proximo",
     "este", "esta", "quincena", "fin", "fines", "finales", "madre", "mama",
     "padre", "papa", "patronal", "pratonal", "tunantada", "huaconada", "yunza",
     "cortamonte", "herranza", "virgen", "santa", "san", "senor", "senora",
@@ -176,6 +178,7 @@ _DATE_PATTERNS = [
     r"\bdia\s+de\s+la\s+(?:madre|mama)\b",
     r"\bdia\s+del\s+(?:padre|papa)\b",
     r"\b(?:hoy|manana|pasado\s+manana)\b",
+    r"\b(?:este|proximo|el)?\s*fin\s+de\s+semana\b",
     r"\b(?:este|proximo|el)\s+(?:" + _DAYS + r")\b",
     r"\b(?:" + _DAYS + r")\b",
 ]
@@ -213,6 +216,8 @@ def _format_date_reference(value: str) -> str:
         return "Día del Padre"
     if norm.startswith("a fin de "):
         return norm.removeprefix("a ")
+    if norm == "el fin de semana":
+        return "fin de semana"
     return value.strip()
 
 
@@ -243,18 +248,77 @@ def _resp(text, buttons=None, completed=False, kind=None, data=None, cancelled=F
 def get_session(number: str) -> Session:
     session = _sessions.get(number)
     if session is None:
-        session = Session(whatsapp=number)
+        session = _restore_session(number)
         _sessions[number] = session
     return session
 
 
+def refresh_session(number: str) -> Session:
+    """Sincroniza el flujo al inicio de cada webhook.
+
+    Cada worker mantiene su propia memoria. Por eso no basta con restaurar solo
+    cuando la sesión no existe: un worker puede conservar un paso anterior
+    mientras otro ya avanzó y persistió el siguiente.
+    """
+    current = _sessions.get(number)
+    try:
+        conv = conv_repo.get(number)
+        if conv is None:
+            return current or get_session(number)
+
+        state = str(conv.get("paso_actual", "") or "")
+        if state in FLOW_STATES:
+            session = Session(
+                whatsapp=number,
+                state=state,
+                data=conv_repo.get_temp_data(number),
+            )
+            _sessions[number] = session
+            return session
+
+        if current is not None and current.state in FLOW_STATES:
+            current = Session(whatsapp=number)
+            _sessions[number] = current
+        return current or get_session(number)
+    except Exception:  # noqa: BLE001
+        return current or get_session(number)
+
+
 def clear_session(number: str) -> None:
     _sessions.pop(number, None)
+    try:
+        conv_repo.clear_flow(number)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _restore_session(number: str) -> Session:
+    """Recupera el flujo persistido cuando otro worker atiende el mensaje."""
+    try:
+        conv = conv_repo.get(number) or {}
+        state = str(conv.get("paso_actual", "") or "")
+        data = conv_repo.get_temp_data(number)
+        if state in FLOW_STATES and isinstance(data, dict):
+            return Session(whatsapp=number, state=state, data=data)
+    except Exception:  # noqa: BLE001
+        pass
+    return Session(whatsapp=number)
+
+
+def _persist(session: Session) -> None:
+    try:
+        if session.state in FLOW_STATES:
+            conv_repo.save_flow(session.whatsapp, session.state, session.data)
+        else:
+            conv_repo.clear_flow(session.whatsapp)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _touch(session: Session, state: str) -> None:
     session.state = state
     session.updated_at = datetime.utcnow()
+    _persist(session)
 
 
 def set_state(number: str, state: str) -> Session:
@@ -551,7 +615,9 @@ def _advance_hire(session: Session, answer: str):
                 _accept_after_retries(session, answer, missing)
                 missing = _missing_step1(session.data)
             else:
-                return _ask_missing_step1(missing)
+                response = _ask_missing_step1(missing)
+                _persist(session)
+                return response
         session.data.pop("step1_intentos", None)
 
         if _missing_step2(session.data):
@@ -571,12 +637,21 @@ def _advance_hire(session: Session, answer: str):
                 _accept_after_retries(session, answer, missing)
                 missing = _missing_step2(session.data)
             else:
-                return _ask_missing_step2(session, missing, answer)
+                response = _ask_missing_step2(session, missing, answer)
+                _persist(session)
+                return response
         session.data.pop("step2_intentos", None)
 
         return _ask_hire_step3(session)
 
     if state == STATE_HIRE_STEP3:
+        if _is_bare_ack(answer):
+            _persist(session)
+            return _resp(
+                "Para no registrar un dato incorrecto, necesito el nombre completo "
+                "o DNI. Si prefieres no dejarlo, escribe *sin nombre* y enviaremos "
+                "la solicitud con tu WhatsApp."
+            )
         nombre, contacto, observacion = _parse_name_contact(answer, session.whatsapp)
         session.data["nombre_o_dni"] = nombre
         session.data["numero_contacto"] = contacto
@@ -586,14 +661,19 @@ def _advance_hire(session: Session, answer: str):
 
     if state == STATE_HIRE_CONFIRM:
         norm = text_utils.normalize(answer)
-        if norm in _AFFIRMATIVE:
+        if _is_hire_confirmation(norm):
             _annotate_pending(session)
             data = dict(session.data)
             _touch(session, STATE_IDLE)
             return _resp("", completed=True, kind="hire", data=data)
-        # El cliente corrige: reinterpretamos su mensaje y volvemos a confirmar.
-        _store_hire_details(session, answer)
-        _ai_fill_missing(session, answer)
+        # El cliente corrige: actualizamos solo los campos que menciona.
+        if not _apply_hire_correction(session, answer):
+            _persist(session)
+            return _resp(
+                "No identifiqué qué dato deseas corregir. Puedes escribir, por "
+                "ejemplo: *la fecha es 15/10*, *el lugar es Lima*, *la hora es "
+                "8 pm* o *el nombre es Ivan Baltazar*."
+            )
         return _ask_hire_confirm(session, corregido=True)
 
     clear_session(session.whatsapp)
@@ -617,6 +697,68 @@ def _ask_hire_confirm(session: Session, corregido: bool = False):
         "Responde *sí* para enviarla, o dime qué corrijo (por ejemplo: \"la hora es 8 pm\").",
     ]
     return _resp("\n".join(lineas))
+
+
+def _is_bare_ack(answer: str) -> bool:
+    norm = text_utils.normalize(answer)
+    return norm in _AFFIRMATIVE or norm in {"bueno", "perfecto", "listo", "vale"}
+
+
+def _is_hire_confirmation(norm: str) -> bool:
+    if norm in _AFFIRMATIVE:
+        return True
+    return bool(re.fullmatch(
+        r"(?:si|claro|ok|okay|dale|confirmo|confirmar|ya)"
+        r"(?:\s+(?:esta\s+bien|todo\s+bien|correcto|confirmado))?",
+        norm,
+    ))
+
+
+def _set_corrected_field(session: Session, field: str, value: str) -> bool:
+    value = (value or "").strip()
+    if not value:
+        return False
+    session.data[field] = value
+    pendientes = session.data.get("por_confirmar")
+    if isinstance(pendientes, list) and field in pendientes:
+        pendientes.remove(field)
+    return True
+
+
+def _apply_hire_correction(session: Session, answer: str) -> bool:
+    """Aplica una rectificación sin tocar campos que el cliente no mencionó."""
+    norm = text_utils.normalize(answer)
+    parsed = _parse_hire_step1(answer)
+    changed = False
+
+    if re.search(r"\b(?:fecha|dia)\b", norm):
+        changed |= _set_corrected_field(session, "fecha_evento", parsed["fecha"])
+    if re.search(r"\b(?:lugar|ciudad|localidad|donde)\b", norm):
+        changed |= _set_corrected_field(session, "localidad", parsed["localidad"])
+        if changed and parsed["loc"] is not None:
+            session.data["frase_contratacion"] = \
+                locality_service.obtener_frase_contratacion(parsed["loc"])
+    if re.search(r"\b(?:tipo\s+de\s+evento|evento|celebracion)\b", norm):
+        changed |= _set_corrected_field(session, "tipo_evento", parsed["tipo"])
+    if re.search(r"\b(?:hora|horario)\b", norm):
+        changed |= _set_corrected_field(session, "horario_evento", parsed["hora"])
+    if re.search(r"\b(?:nombre|dni|a\s+nombre\s+de)\b", norm):
+        identity_answer = re.sub(
+            r"(?i)^.*?\b(?:mi\s+nombre\s+es|el\s+nombre\s+es|nombre\s+es|"
+            r"a\s+nombre\s+de|dni\s+es)\b\s*:?\s*",
+            "",
+            answer,
+        ).strip() or answer
+        nombre, contacto, observacion = _parse_name_contact(
+            identity_answer, session.whatsapp
+        )
+        if nombre:
+            session.data["nombre_o_dni"] = nombre
+            session.data["numero_contacto"] = contacto
+            session.data["observaciones"] = observacion
+            changed = True
+
+    return changed
 
 
 def _annotate_pending(session: Session) -> None:
@@ -668,7 +810,7 @@ def _is_non_name_answer(answer: str) -> bool:
         r"\b(?:no|prefiero\s+no)\s+(?:quiero|deseo|puedo|voy\s+a)?\s*"
         r"(?:dar|dejar|decir|brindar|pasar)\s+(?:mi\s+)?(?:nombre|dni|datos)\b",
         norm,
-    ))
+    )) or norm in {"sin nombre", "sin dni", "anonimo", "anonima"}
     no_reservation_yet = bool(re.search(
         r"\b(?:no\s+quiero|sin|todavia\s+no|aun\s+no|por\s+ahora\s+no)\s+"
         r"(?:reservar|reserva|contratar|cerrar)\b",

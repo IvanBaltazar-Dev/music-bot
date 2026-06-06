@@ -924,6 +924,9 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
     except Exception:  # noqa: BLE001
         pass
 
+    # Sincroniza el paso persistido antes de enrutar. Esto evita que un worker
+    # con memoria antigua trate una respuesta de contratación como otra intención.
+    session_service.refresh_session(from_number)
 
     # 1) Administrador: nunca debe caer al flujo de cliente.
     if is_admin:

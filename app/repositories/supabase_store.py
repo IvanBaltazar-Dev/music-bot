@@ -177,9 +177,15 @@ def _to_admin(r: dict) -> dict:
 
 
 def _from_conversation(r: dict) -> dict:
+    metadata = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
     return {
         "id_conversacion": r.get("legacy_id") or r.get("id", ""),
         "numero_usuario": r.get("client_phone", ""),
+        "flujo_actual": metadata.get("flow", "") or "",
+        "paso_actual": metadata.get("step", "") or "",
+        "datos_temporales_json": json.dumps(
+            metadata.get("flow_data", {}), ensure_ascii=False
+        ) if metadata.get("flow_data") else "",
         "estado_conversacion": r.get("state", "BOT_ACTIVO"),
         "admin_numero": r.get("current_admin_phone", ""),
         "fecha_inicio": r.get("started_at", ""),
@@ -203,6 +209,17 @@ def _to_conversation(r: dict) -> dict:
         "current_admin_id": (admin or {}).get("id"),
         "current_admin_phone": admin_phone or None,
     }
+    if any(k in r for k in ("flujo_actual", "paso_actual", "datos_temporales_json")):
+        raw_data = r.get("datos_temporales_json", "")
+        try:
+            flow_data = json.loads(raw_data) if raw_data else {}
+        except (TypeError, ValueError):
+            flow_data = {}
+        payload["metadata"] = {
+            "flow": r.get("flujo_actual") or "",
+            "step": r.get("paso_actual") or "",
+            "flow_data": flow_data,
+        }
     if r.get("fecha_toma_control"):
         payload["control_taken_at"] = r.get("fecha_toma_control")
     if r.get("fecha_suelta_control"):

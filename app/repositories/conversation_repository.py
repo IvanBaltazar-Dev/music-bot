@@ -125,3 +125,21 @@ def get_temp_data(numero_usuario: str) -> dict:
         return json.loads(raw)
     except (ValueError, TypeError):
         return {}
+
+
+def save_flow(numero_usuario: str, state: str, data: dict) -> None:
+    """Persiste el avance de un flujo guiado para sobrevivir reinicios/workers."""
+    upsert(numero_usuario, {
+        "flujo_actual": "contratar" if state.startswith("hire_") else "",
+        "paso_actual": state,
+        "datos_temporales_json": json.dumps(data, ensure_ascii=False),
+    })
+
+
+def clear_flow(numero_usuario: str) -> None:
+    """Limpia únicamente el estado temporal del bot, sin alterar el control admin."""
+    upsert(numero_usuario, {
+        "flujo_actual": "",
+        "paso_actual": "",
+        "datos_temporales_json": "",
+    })

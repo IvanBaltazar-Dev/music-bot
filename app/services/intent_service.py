@@ -143,6 +143,8 @@ _KEYWORDS = {
     ],
     INTENT_CANCEL: [
         "cancelar", "salir", "reiniciar", "empezar de nuevo", "menu",
+        "ya no deseo", "ya no quiero", "no deseo continuar",
+        "no quiero continuar", "dejalo ahi", "dejalo nomas",
     ],
 }
 
