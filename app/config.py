@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # Plantilla aprobada por Meta para avisar fuera de la ventana de 24 horas.
     ADMIN_NOTIFICATION_TEMPLATE_NAME: str = ""
-    ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE: str = "es_PE"
+    ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE: str = "es"
 
     # Si un admin toma control y no cierra/suelta, el caso vuelve a cola tras
     # este tiempo para que el cliente no quede bloqueado indefinidamente.

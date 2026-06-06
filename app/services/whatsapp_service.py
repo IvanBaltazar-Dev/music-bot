@@ -107,7 +107,7 @@ async def send_template_message(
     to: str,
     template_name: str,
     parameters: list[str],
-    language: str = "es_PE",
+    language: str = "es",
 ):
     """Envía una plantilla aprobada por Meta con variables de cuerpo."""
     if not template_name:
@@ -118,7 +118,7 @@ async def send_template_message(
         "type": "template",
         "template": {
             "name": template_name,
-            "language": {"code": language or "es_PE"},
+            "language": {"code": language or "es"},
             "components": [{
                 "type": "body",
                 "parameters": [
