@@ -95,6 +95,7 @@ _EVENT_TYPES = {
     "aniversario comunal": "aniversario comunal",
     "quince anos": "quinceañero",
     "cumpleanos": "cumpleaños",
+    "cumpleano": "cumpleaños",
     "cumple": "cumpleaños",
     "boda": "boda",
     "matrimonio": "matrimonio",
@@ -132,7 +133,7 @@ _COSTUMBRISTA_EVENT_PATTERNS: list[tuple[str, str]] = [
 _STOPWORDS = {
     "para", "una", "un", "en", "de", "del", "la", "el", "lo", "los", "las",
     "y", "o", "seria", "sera", "es", "mi", "por", "ahi", "alla", "con", "que",
-    "se", "presentacion", "evento", "fiesta", "ciudad", "localidad", "provincia",
+    "se", "presentacion", "evento", "fiesta", "lugar", "ciudad", "localidad", "provincia",
     "distrito", "tipo", "fecha", "hora", "horas", "dia", "aprox", "aproximada",
     "a", "al", "las", "los", "desde", "pm", "am", "hoy", "manana", "pasado", "proximo",
     "este", "esta", "quincena", "fin", "fines", "finales", "madre", "mama",
@@ -271,7 +272,7 @@ def refresh_session(number: str) -> Session:
             session = Session(
                 whatsapp=number,
                 state=state,
-                data=conv_repo.get_temp_data(number),
+                data=conv_repo.temp_data_from_record(conv),
             )
             _sessions[number] = session
             return session
@@ -297,7 +298,7 @@ def _restore_session(number: str) -> Session:
     try:
         conv = conv_repo.get(number) or {}
         state = str(conv.get("paso_actual", "") or "")
-        data = conv_repo.get_temp_data(number)
+        data = conv_repo.temp_data_from_record(conv)
         if state in FLOW_STATES and isinstance(data, dict):
             return Session(whatsapp=number, state=state, data=data)
     except Exception:  # noqa: BLE001
@@ -368,7 +369,11 @@ def _extract_unknown_city(text: str, tipo_label: str) -> str:
     """Intenta extraer un nombre de ciudad cuando no está en `Localidades`."""
     original_soft = _replace_number_words(text_utils.deburr(text))
     has_date_hint = bool(_search_first(_DATE_PATTERNS, original_soft))
-    has_place_hint = bool(re.search(r"\b(?:en|para|de|del)\s+\w+", original_soft))
+    has_place_hint = bool(re.search(
+        r"\b(?:en|para|de|del|lugar(?:\s+es)?|ciudad(?:\s+es)?|"
+        r"localidad(?:\s+es)?)\s+\w+",
+        original_soft,
+    ))
     if not (tipo_label or has_date_hint or has_place_hint):
         return ""
 
@@ -446,7 +451,7 @@ def _looks_like_costumbrista_event(answer: str) -> bool:
     ))
 
 
-def _ask_missing_step1(missing: list[str]):
+def _ask_missing_step1(session: Session, missing: list[str]):
     if "fecha_evento" in missing:
         if "localidad" in missing:
             return _resp(
@@ -456,9 +461,11 @@ def _ask_missing_step1(missing: list[str]):
                 "• quincena de octubre en Jauja\n"
                 "• Día de la Madre en Lima"
             )
+        frase = session.data.get("frase_contratacion") or ""
+        intro = f"{frase}\n\n" if frase else ""
         return _resp(
-            "No entendí bien la fecha. ¿Me la escribes de nuevo? Puede ser: 15/10, "
-            "quincena de octubre, fin de mes o Día del Padre."
+            f"{intro}Ya tengo el lugar. Me falta la fecha del evento. Puede ser: "
+            "15/10, quincena de octubre, fin de mes o Día del Padre."
         )
 
     return _resp(
@@ -577,11 +584,10 @@ def _ask_hire_step2(session: Session):
 def _ask_hire_step3(session: Session):
     _touch(session, STATE_HIRE_STEP3)
     return _resp(
-        "¿A nombre de quién dejamos la solicitud? Puedes pasarme tu nombre "
-        "completo o tu DNI.\n\n"
-        "Si por ahora solo quieres cotizar o prefieres no dejar nombre, dímelo y "
-        "lo pasamos al manager con tu WhatsApp. Te van a responder por este "
-        "mismo chat; si prefieres una llamada, indícanos a qué hora te acomoda."
+        "¿A nombre de quién dejamos la solicitud?\n\n"
+        "Puedes pasarme tu nombre completo o tu DNI, como prefieras. Cuando me "
+        "lo envíes, lo paso al manager para que te responda por este mismo chat.\n\n"
+        "Si prefieres que te llamen, dime también a qué hora te acomoda mejor."
     )
 
 
@@ -615,7 +621,7 @@ def _advance_hire(session: Session, answer: str):
                 _accept_after_retries(session, answer, missing)
                 missing = _missing_step1(session.data)
             else:
-                response = _ask_missing_step1(missing)
+                response = _ask_missing_step1(session, missing)
                 _persist(session)
                 return response
         session.data.pop("step1_intentos", None)
@@ -667,27 +673,39 @@ def _advance_hire(session: Session, answer: str):
             _touch(session, STATE_IDLE)
             return _resp("", completed=True, kind="hire", data=data)
         # El cliente corrige: actualizamos solo los campos que menciona.
-        if not _apply_hire_correction(session, answer):
+        corrected_fields = _apply_hire_correction(session, answer)
+        if not corrected_fields:
             _persist(session)
             return _resp(
                 "No identifiqué qué dato deseas corregir. Puedes escribir, por "
-                "ejemplo: *la fecha es 15/10*, *el lugar es Lima*, *la hora es "
-                "8 pm* o *el nombre es Ivan Baltazar*."
+                "ejemplo: *14/07*, *Lima*, *la hora es 8 pm* o *el evento es "
+                "cumpleaños*."
             )
-        return _ask_hire_confirm(session, corregido=True)
+        return _ask_hire_confirm(
+            session,
+            corregido=True,
+            show_location_phrase="localidad" in corrected_fields,
+        )
 
     clear_session(session.whatsapp)
     return _resp("Reinicié la conversación. Escribe “hola” cuando quieras.")
 
 
-def _ask_hire_confirm(session: Session, corregido: bool = False):
+def _ask_hire_confirm(
+    session: Session,
+    corregido: bool = False,
+    show_location_phrase: bool = False,
+):
     """Resumen final para que el cliente confirme antes de enviar la solicitud."""
     d = session.data
     _touch(session, STATE_HIRE_CONFIRM)
     cab = ("Actualizado. ¿Así está bien?" if corregido
            else "Antes de enviarla, revisa que esté todo bien:")
-    lineas = [
-        cab, "",
+    lineas = [cab]
+    if show_location_phrase and d.get("frase_contratacion"):
+        lineas.extend(["", d["frase_contratacion"]])
+    lineas.extend([
+        "",
         f"📅 Fecha: {d.get('fecha_evento') or '—'}",
         f"📍 Lugar: {d.get('localidad') or '—'}",
         f"🎉 Evento: {d.get('tipo_evento') or '—'}",
@@ -695,7 +713,7 @@ def _ask_hire_confirm(session: Session, corregido: bool = False):
         f"👤 A nombre de: {d.get('nombre_o_dni') or '—'}",
         "",
         "Responde *sí* para enviarla, o dime qué corrijo (por ejemplo: \"la hora es 8 pm\").",
-    ]
+    ])
     return _resp("\n".join(lineas))
 
 
@@ -725,23 +743,43 @@ def _set_corrected_field(session: Session, field: str, value: str) -> bool:
     return True
 
 
-def _apply_hire_correction(session: Session, answer: str) -> bool:
+def _apply_hire_correction(session: Session, answer: str) -> set[str]:
     """Aplica una rectificación sin tocar campos que el cliente no mencionó."""
     norm = text_utils.normalize(answer)
     parsed = _parse_hire_step1(answer)
-    changed = False
+    changed: set[str] = set()
 
-    if re.search(r"\b(?:fecha|dia)\b", norm):
-        changed |= _set_corrected_field(session, "fecha_evento", parsed["fecha"])
-    if re.search(r"\b(?:lugar|ciudad|localidad|donde)\b", norm):
-        changed |= _set_corrected_field(session, "localidad", parsed["localidad"])
-        if changed and parsed["loc"] is not None:
+    has_date_label = bool(re.search(r"\b(?:fecha|dia)\b", norm))
+    has_place_label = bool(re.search(r"\b(?:lugar|ciudad|localidad|donde)\b", norm))
+    has_event_label = bool(re.search(
+        r"\b(?:tipo\s+de\s+evento|evento|celebracion)\b", norm
+    ))
+    has_time_label = bool(re.search(r"\b(?:hora|horario)\b", norm))
+
+    # Valores inequívocos también funcionan solos: "14/07" y "Lima".
+    if parsed["fecha"] and (has_date_label or not any((
+        has_place_label, has_event_label, has_time_label
+    ))):
+        if _set_corrected_field(session, "fecha_evento", parsed["fecha"]):
+            changed.add("fecha_evento")
+    if parsed["localidad"] and (has_place_label or not any((
+        has_date_label, has_event_label, has_time_label
+    ))):
+        if _set_corrected_field(session, "localidad", parsed["localidad"]):
+            changed.add("localidad")
+        if "localidad" in changed:
             session.data["frase_contratacion"] = \
                 locality_service.obtener_frase_contratacion(parsed["loc"])
-    if re.search(r"\b(?:tipo\s+de\s+evento|evento|celebracion)\b", norm):
-        changed |= _set_corrected_field(session, "tipo_evento", parsed["tipo"])
-    if re.search(r"\b(?:hora|horario)\b", norm):
-        changed |= _set_corrected_field(session, "horario_evento", parsed["hora"])
+    if parsed["tipo"] and (has_event_label or not any((
+        has_date_label, has_place_label, has_time_label
+    ))):
+        if _set_corrected_field(session, "tipo_evento", parsed["tipo"]):
+            changed.add("tipo_evento")
+    if parsed["hora"] and (has_time_label or not any((
+        has_date_label, has_place_label, has_event_label
+    ))):
+        if _set_corrected_field(session, "horario_evento", parsed["hora"]):
+            changed.add("horario_evento")
     if re.search(r"\b(?:nombre|dni|a\s+nombre\s+de)\b", norm):
         identity_answer = re.sub(
             r"(?i)^.*?\b(?:mi\s+nombre\s+es|el\s+nombre\s+es|nombre\s+es|"
@@ -756,7 +794,7 @@ def _apply_hire_correction(session: Session, answer: str) -> bool:
             session.data["nombre_o_dni"] = nombre
             session.data["numero_contacto"] = contacto
             session.data["observaciones"] = observacion
-            changed = True
+            changed.add("nombre_o_dni")
 
     return changed
 
@@ -810,7 +848,11 @@ def _is_non_name_answer(answer: str) -> bool:
         r"\b(?:no|prefiero\s+no)\s+(?:quiero|deseo|puedo|voy\s+a)?\s*"
         r"(?:dar|dejar|decir|brindar|pasar)\s+(?:mi\s+)?(?:nombre|dni|datos)\b",
         norm,
-    )) or norm in {"sin nombre", "sin dni", "anonimo", "anonima"}
+    )) or bool(re.search(
+        r"\b(?:sin|ningun|ninguna)\s+(?:mi\s+)?(?:nombre|dni|dato(?:s)?)\b|"
+        r"\b(?:por\s+ahora\s+)?no\s+(?:mostrare|muestro|dare|doy)\s+mi\s+nombre\b",
+        norm,
+    )) or norm in {"anonimo", "anonima"}
     no_reservation_yet = bool(re.search(
         r"\b(?:no\s+quiero|sin|todavia\s+no|aun\s+no|por\s+ahora\s+no)\s+"
         r"(?:reservar|reserva|contratar|cerrar)\b",

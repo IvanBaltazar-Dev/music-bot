@@ -117,7 +117,11 @@ def get_state(numero_usuario: str) -> str:
 
 
 def get_temp_data(numero_usuario: str) -> dict:
-    conv = get(numero_usuario)
+    return temp_data_from_record(get(numero_usuario))
+
+
+def temp_data_from_record(conv: dict | None) -> dict:
+    """Lee los datos temporales del mismo snapshot de conversación."""
     raw = (conv or {}).get("datos_temporales_json", "")
     if not raw:
         return {}
