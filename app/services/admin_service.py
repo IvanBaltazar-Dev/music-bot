@@ -965,9 +965,12 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
 
     admin = _only_digits(admin_number)
     trace = f"{_admin_label(admin)} marcó la solicitud como {final_state}"
+    # Al finalizar (cerrar/cotizar/descartar) la conversación vuelve al bot.
+    # El estado terminal queda registrado en `estado`; modo_atencion solo admite
+    # BOT/ADMIN en la BD (un valor inválido rechaza TODA la actualización).
     ok = hiring_repo.update(code, {
         "estado": final_state,
-        "modo_atencion": "CERRADO",
+        "modo_atencion": "BOT",
         "observaciones": _with_trace(sol, trace),
     })
     if not ok:
@@ -1516,9 +1519,11 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
     trace = f"{_admin_label(admin)} finalizo la solicitud como {final_state}"
     if note:
         trace += f". Nota: {note[:180]}"
+    # La conversación vuelve al bot al finalizar; modo_atencion solo admite
+    # BOT/ADMIN en la BD. El estado terminal se guarda en `estado`.
     ok = hiring_repo.update(code, {
         "estado": final_state,
-        "modo_atencion": "CERRADO",
+        "modo_atencion": "BOT",
         "admin_asignado": admin,
         "observaciones": _with_trace(sol, trace),
     })

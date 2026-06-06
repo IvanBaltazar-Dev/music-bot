@@ -12,11 +12,14 @@ import uuid
 from app.repositories import sheets_client
 from app.repositories.sheets_schema import SHEET_CONVERSATIONS
 
-# Estados de conversación
+# Estados de conversación. Deben coincidir EXACTAMENTE con el CHECK constraint
+# de conversation_threads.state en Supabase:
+#   ('BOT_ACTIVO', 'ESPERANDO_RESPUESTA', 'ADMIN_CONTROL', 'CERRADA')
+# Un valor fuera de esta lista rechaza toda la actualización (RuntimeError).
 BOT_ACTIVO = "BOT_ACTIVO"
 ESPERANDO_RESPUESTA = "ESPERANDO_RESPUESTA"
 ADMIN_CONTROL = "ADMIN_CONTROL"
-FINALIZADA = "FINALIZADA"
+FINALIZADA = "CERRADA"
 
 
 def _new_id() -> str:
