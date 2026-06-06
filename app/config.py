@@ -3,20 +3,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # --- Variables existentes (NO renombrar) ---
-    VERIFY_TOKEN: str
-    WHATSAPP_TOKEN: str
-    PHONE_NUMBER_ID: str
+    VERIFY_TOKEN: str = ""
+    WHATSAPP_TOKEN: str = ""
+    PHONE_NUMBER_ID: str = ""
     WHATSAPP_API_VERSION: str = "v25.0"
+    WHATSAPP_APP_SECRET: str = ""
 
     # --- Administradores ---
     # Lista separada por comas, ej: 519XXXXXXXX,519YYYYYYYY
     ADMIN_PHONE_NUMBERS: str = ""
+
+    # Código de país por defecto (Perú=51). Si un número viene sin él (solo los
+    # 9 dígitos nacionales), se le antepone al ENVIAR para que WhatsApp lo
+    # entregue. Evita que admins no reciban notificaciones por falta del '51'.
+    DEFAULT_COUNTRY_CODE: str = "51"
 
     # --- Google Sheets (opcional) ---
     # Si está deshabilitado o faltan credenciales, el bot usa memoria temporal.
     GOOGLE_SHEETS_ENABLED: bool = False
     GOOGLE_SHEETS_ID: str = ""
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
+
+    # --- Persistencia ---
+    # sheets: Google Sheets, supabase: PostgreSQL/Supabase, memory: temporal local.
+    STORAGE_BACKEND: str = ""
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # --- Identidad de la agrupación ---
     BOT_NAME: str = "Music Bot"
@@ -34,6 +46,10 @@ class Settings(BaseSettings):
     # para Gemini sin romper la configuración previa. No es obligatorio definirlas.
     GEMINI_ENABLED: bool = False
     GEMINI_MODEL: str = ""
+
+    # Si un admin toma control y no cierra/suelta, el caso vuelve a cola tras
+    # este tiempo para que el cliente no quede bloqueado indefinidamente.
+    ADMIN_CONTROL_TIMEOUT_HOURS: int = 48
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -60,6 +76,38 @@ class Settings(BaseSettings):
     def gemini_model(self) -> str:
         """Modelo de Gemini: GEMINI_MODEL si se definió, si no AI_MODEL."""
         return (self.GEMINI_MODEL or self.AI_MODEL or "gemini-1.5-flash").strip()
+
+    @property
+    def storage_backend(self) -> str:
+        backend = (self.STORAGE_BACKEND or "").strip().lower()
+        if backend in {"supabase", "memory", "sheets"}:
+            return backend
+        return "sheets" if self.GOOGLE_SHEETS_ENABLED else "memory"
+
+    @property
+    def supabase_enabled(self) -> bool:
+        return bool(
+            self.storage_backend == "supabase"
+            and self.SUPABASE_URL
+            and self.SUPABASE_SERVICE_ROLE_KEY
+        )
+
+    @property
+    def production_health_ready(self) -> bool:
+        required_values = (
+            self.STORAGE_BACKEND,
+            self.SUPABASE_URL,
+            self.SUPABASE_SERVICE_ROLE_KEY,
+            self.WHATSAPP_TOKEN,
+            self.PHONE_NUMBER_ID,
+            self.VERIFY_TOKEN,
+        )
+        valid_storage_backend = (self.STORAGE_BACKEND or "").strip().lower() in {
+            "memory",
+            "sheets",
+            "supabase",
+        }
+        return valid_storage_backend and all(str(value or "").strip() for value in required_values)
 
 
 settings = Settings()

@@ -1,5 +1,7 @@
 venv/
 .env
+*.env
+
 __pycache__/
 *.pyc
 .idea/
@@ -9,6 +11,7 @@ __pycache__/
 credentials/
 *.service-account.json
 google-service-account.json
+*.json
 
 # Artefactos locales (no van a producción)
 *.xlsx
@@ -19,4 +22,5 @@ crear_excel_completo.py
 /test_events.py
 /test_google_sheets_setup.py
 /test_sheets.py
+/test_session_service.py
 

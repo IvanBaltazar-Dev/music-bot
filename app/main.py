@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
 
 from app.routes.whatsapp_webhook import router as whatsapp_router
 
@@ -32,14 +32,14 @@ def root():
 
 
 @app.get("/health")
-def health():
-    """Healthcheck para monitoreo/uptime (Oracle Cloud, balanceadores, etc.)."""
+def health(response: Response):
+    """Healthcheck de producción sin exponer configuración sensible."""
     from app.config import settings
-    from app.repositories import sheets_client
 
+    ready = settings.production_health_ready
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {
-        "status": "healthy",
-        "whatsapp": bool(settings.WHATSAPP_TOKEN and settings.PHONE_NUMBER_ID),
-        "google_sheets": sheets_client.is_enabled(),
-        "gemini": settings.gemini_enabled,
+        "status": "healthy" if ready else "unhealthy",
+        "ready": ready,
     }

@@ -120,6 +120,40 @@ def classify_intent(text: str) -> dict:
         return {"success": False}
 
 
+def interpret_event_fields(text: str) -> dict:
+    """Interpreta fecha/hora/tipo de un mensaje ambiguo que el regex no entendió.
+
+    Normaliza expresiones como 'medio día'→'mediodía (12:00 pm)',
+    'fin de semana'→'fin de semana', 'al atardecer'→'tarde'. Devuelve
+    {fecha, hora, tipo} con lo que pueda inferir (vacío si no hay).
+    NO inventa: si el texto no da pistas de un campo, lo deja vacío.
+    """
+    if not _enabled or not _client:
+        return {}
+    try:
+        prompt = (
+            "Extrae del mensaje de un cliente estos datos para una contratación "
+            "musical y NORMALÍZALOS a un texto corto y claro en español. Si un "
+            "dato no aparece, déjalo como cadena vacía. NO inventes.\n"
+            "- fecha: fecha o referencia ('15/10', 'fin de semana', 'sábado', "
+            "'fin de mes', 'Día de la Madre').\n"
+            "- hora: hora aproximada ('mediodía (12 pm)', '8 pm', 'en la tarde', "
+            "'al atardecer (~6 pm)').\n"
+            "- tipo: tipo de evento ('cumpleaños', 'boda', 'fiesta patronal', etc.).\n\n"
+            f"Mensaje: {text}\n\n"
+            'Responde SOLO JSON sin markdown: {"fecha": "", "hora": "", "tipo": ""}'
+        )
+        result = json.loads(_strip_json(_generate(prompt)))
+        return {
+            "fecha": str(result.get("fecha", "") or "").strip(),
+            "hora": str(result.get("hora", "") or "").strip(),
+            "tipo": str(result.get("tipo", "") or "").strip(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemini] error en interpret_event_fields: {exc.__class__.__name__}")
+        return {}
+
+
 # Acciones que la IA puede sugerir cuando un ADMIN escribe en lenguaje natural
 # y las reglas no lo entienden. Solo clasifica (no redacta).
 _VALID_ADMIN_ACTIONS = {
@@ -159,6 +193,36 @@ def classify_admin_request(text: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"[gemini] error en classify_admin_request: {exc.__class__.__name__}")
         return {"success": False}
+
+
+def summarize_admin_context(client_name: str, request_data: dict, transcript: str) -> str | None:
+    """Resume para un admin donde quedo una conversacion con un cliente."""
+    if not _enabled or not _client or not transcript:
+        return None
+    try:
+        prompt = (
+            "Eres asistente interno de un manager de una agrupacion musical. "
+            "Resume SOLO el contexto util para retomar una solicitud de contratacion. "
+            "No inventes datos. Si falta algo, no lo menciones. Devuelve una sola "
+            "frase en espanol, natural y concreta, maximo 35 palabras.\n\n"
+            "Formato deseado:\n"
+            "Contexto anterior: <que queria el cliente, condiciones, dudas, precio, "
+            "rebaja, bailarines, horario o siguiente paso pendiente>.\n\n"
+            f"Cliente: {client_name}\n"
+            f"Solicitud: {request_data}\n\n"
+            f"Historial:\n{transcript}\n\n"
+            "Respuesta:"
+        )
+        text = _generate(prompt)
+        if not text:
+            return None
+        text = text.replace("\n", " ").strip()
+        if not text.lower().startswith("contexto anterior:"):
+            text = "Contexto anterior: " + text
+        return text[:500]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemini] error en summarize_admin_context: {exc.__class__.__name__}")
+        return None
 
 
 # NOTA: la IA NO redacta respuestas libres a clientes. Solo clasifica.

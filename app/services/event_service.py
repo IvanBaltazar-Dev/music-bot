@@ -1,6 +1,6 @@
 """Servicio de Eventos.
 
-Consulta eventos activos desde `google_sheets_repository` (hoja `Eventos`) y arma
+Consulta eventos activos desde `event_repository` y arma
 las respuestas públicas del flujo "Quiero ir a verlos". No inventa precios ni
 ubicaciones: si un dato no existe, simplemente no se muestra.
 """
@@ -11,7 +11,6 @@ from datetime import date, datetime
 from datetime import timedelta
 
 from app.repositories import event_repository
-from app.repositories.google_sheets_repository import get_active_events, is_enabled
 from app.services import text_utils
 
 
@@ -65,9 +64,11 @@ def _event_description(e: dict) -> str:
 
 
 def get_upcoming_confirmed(ciudad: str | None = None) -> list[dict]:
-    """Eventos ACTIVO desde Google Sheets, opcionalmente filtrados por ciudad."""
-    print(f"[events] google_sheets_enabled={is_enabled()}")
-    events = get_active_events()
+    """Eventos confirmados/activos, opcionalmente filtrados por ciudad."""
+    events = [
+        e for e in event_repository.get_all()
+        if text_utils.normalize(e.get("estado", "")) in {"activo", "confirmado"}
+    ]
     print(f"[events] active_events_found={len(events)}")
 
     today = date.today()

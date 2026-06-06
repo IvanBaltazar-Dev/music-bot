@@ -23,6 +23,8 @@ STATE_SEE_INTEREST = "see_interest"
 STATE_HIRE_STEP1 = "hire_step1"
 STATE_HIRE_STEP2 = "hire_step2"
 STATE_HIRE_STEP3 = "hire_step3"
+# Paso final: el cliente revisa el resumen y confirma antes de enviar.
+STATE_HIRE_CONFIRM = "hire_confirm"
 
 # --- Flujo administrativo: registrar evento ---
 # Paso 1: recoger datos (plantilla). Paso 2: confirmar antes de guardar.
@@ -42,6 +44,7 @@ HIRE_STATES = {
     STATE_HIRE_STEP1,
     STATE_HIRE_STEP2,
     STATE_HIRE_STEP3,
+    STATE_HIRE_CONFIRM,
 }
 
 ADMIN_EVENT_STATES = {

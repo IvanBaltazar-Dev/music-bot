@@ -69,6 +69,19 @@ def get_by_client(numero_cliente: str) -> dict | None:
     return matches[-1] if matches else None
 
 
+def get_by_client_fragment(fragmento: str) -> dict | None:
+    """Solicitud mas reciente cuyo numero contiene el fragmento indicado."""
+    target = "".join(ch for ch in str(fragmento) if ch.isdigit())
+    if not target:
+        return None
+    matches = []
+    for r in sheets_client.read_records(SHEET_HIRING):
+        digits = "".join(ch for ch in str(r.get("numero_cliente", "")) if ch.isdigit())
+        if digits and (target in digits or digits.endswith(target)):
+            matches.append(r)
+    return matches[-1] if matches else None
+
+
 def get_active_by_client(numero_cliente: str) -> dict | None:
     """Solicitud abierta más reciente de un cliente, si existe."""
     target = "".join(ch for ch in str(numero_cliente) if ch.isdigit())
@@ -92,6 +105,39 @@ def get_controlled_by_admin(admin_number: str) -> dict | None:
         if same_admin and estado == ESTADO_EN_CONVERSACION:
             matches.append(r)
     return matches[-1] if matches else None
+
+
+def release_control_by_admin(admin_number: str, trace_message: str = "") -> list[dict]:
+    """Libera todas las solicitudes en conversacion asignadas al admin."""
+    target = "".join(ch for ch in str(admin_number) if ch.isdigit())
+    if not target:
+        return []
+
+    released: list[dict] = []
+    for r in sheets_client.read_records(SHEET_HIRING):
+        admin = "".join(ch for ch in str(r.get("admin_asignado", "")) if ch.isdigit())
+        estado = str(r.get("estado", "")).strip().upper()
+        same_admin = admin == target or (admin and target and admin[-9:] == target[-9:])
+        if not same_admin or estado != ESTADO_EN_CONVERSACION:
+            continue
+
+        code = str(r.get("codigo_solicitud", "")).strip()
+        if not code:
+            continue
+
+        observaciones = str(r.get("observaciones", "") or "").strip()
+        if trace_message:
+            observaciones = f"{observaciones}\n{trace_message}".strip()
+        ok = update(code, {
+            "estado": ESTADO_ABIERTA,
+            "modo_atencion": "BOT",
+            "admin_asignado": "",
+            "observaciones": observaciones,
+        })
+        if ok:
+            released.append(r)
+
+    return released
 
 
 def update(code: str, updates: dict) -> bool:

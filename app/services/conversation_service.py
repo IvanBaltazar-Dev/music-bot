@@ -16,6 +16,7 @@ nunca quemadas aquí.
 from __future__ import annotations
 
 from app.config import settings
+from app.security import mask_identifier
 from app.models.session import (
     SEE_STATES,
     STATE_SEE_CITY,
@@ -113,6 +114,26 @@ def _log_msg(numero: str, direccion: str, texto: str, *, flujo="", intencion="",
         })
     except Exception:  # noqa: BLE001
         pass
+
+
+def _detect_incoming_intent(text: str, button_id: str, is_admin: bool) -> str:
+    """Valor que se guarda en Mensajes.intencion_detectada."""
+    if button_id:
+        if is_admin:
+            parsed = intent_service.parse_admin_button(button_id)
+            return parsed[0] if parsed else (intent_service.button_to_intent(button_id) or button_id)
+        return intent_service.button_to_intent(button_id) or button_id
+
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return ""
+
+    if is_admin:
+        command_text = intent_service.strip_hash(clean_text) if intent_service.is_hash_command(clean_text) else clean_text
+        command = intent_service.detect_admin_command(command_text)
+        return f"ADMIN_{command}" if command else "ADMIN_MESSAGE"
+
+    return intent_service.detect_intent(clean_text)
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +614,7 @@ async def _handle_admin_command(to: str, command: str, text: str):
     elif command == intent_service.ADMIN_VIEW_EVENTS:
         await admin_service.send_events_list(to)
     elif command == intent_service.ADMIN_CLIENT_SUMMARY:
-        await admin_service.send_client_summary(to)
+        await admin_service.send_client_summary(to, text=text)
     elif command == intent_service.ADMIN_VIEW_METRICS:
         await _send_text(to, metrics_service.format_summary(), flujo="admin")
     elif command in _TEXT_ACTION:
@@ -780,17 +801,25 @@ async def _handle_existing_hire_request(to: str, text: str) -> bool:
         hiring_repo.update(code, {"ultimo_mensaje_cliente": text})
         sol = hiring_repo.get_by_code(code) or sol
 
+    last_admin = msg_repo.last_admin_for_client(to)
+    if last_admin:
+        print(
+            "[conversation] solicitud abierta: reenviando respuesta al ultimo admin "
+            f"client={mask_identifier(to)} admin={mask_identifier(last_admin)} code={code}"
+        )
+        await admin_service.relay_client_to_admin(to, last_admin, text, code=code)
+        return True
+
     await _send_text(
         to,
-        "Ya tenemos tu solicitud en cola 🙌\n\n"
-        "No voy a crear otra para no mezclar datos. Le aviso al manager que volviste "
-        "a escribir por este mismo caso.",
+        "Te leo. Agregue tu mensaje a la solicitud que ya tenemos abierta.\n\n"
+        "Le aviso al manager por este mismo caso para continuar sin mezclar datos.",
         flujo="contratar",
     )
     try:
         await admin_service.notify_request_update(sol, text)
     except Exception as exc:  # noqa: BLE001
-        print(f"[conversation] no se pudo notificar actualización: {exc.__class__.__name__}")
+        print(f"[conversation] no se pudo notificar actualizacion: {exc.__class__.__name__}")
     return True
 
 
@@ -801,7 +830,7 @@ async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = 
     if intent == intent_service.INTENT_GREETING:
         await _send_greeting(to, profile_name)
     elif intent == intent_service.INTENT_SEE_EVENTS:
-        print(f"[events] intent_detected={intent} text={text!r}")
+        print(f"[events] intent_detected={intent}")
         metrics_service.log(
             to, metrics_service.PROXIMAS_PRESENTACIONES,
             flujo="ver_eventos", paso="consulta_directa", mensaje=text,
@@ -880,7 +909,7 @@ async def handle_incoming_message(
     try:
         await _route(from_number, text, button_id, profile_name, raw_json)
     except Exception as exc:  # noqa: BLE001 - el webhook nunca debe caerse
-        print(f"[conversation] error: {exc.__class__.__name__}: {exc}")
+        print(f"[conversation] error: {exc.__class__.__name__}")
         try:
             await error_service.log_error(
                 "conversation_service", exc,
@@ -892,21 +921,22 @@ async def handle_incoming_message(
 
 async def _route(from_number: str, text: str, button_id: str, profile_name: str, raw_json: str):
     # 0) Registrar mensaje entrante + asegurar registro de Conversación
+    is_admin = admin_service.is_admin(from_number)
+    incoming_intent = _detect_incoming_intent(text, button_id, is_admin)
     _log_msg(
         from_number, msg_repo.ENTRANTE, text or "",
         tipo="interactive" if button_id else "text",
-        payload_boton=button_id, raw=raw_json,
+        payload_boton=button_id, intencion=incoming_intent, raw=raw_json,
     )
     try:
         conv_repo.upsert(from_number, {})  # crea/actualiza la fila de Conversaciones
     except Exception:  # noqa: BLE001
         pass
 
-    is_admin = admin_service.is_admin(from_number)
 
     # 1) Administrador: nunca debe caer al flujo de cliente.
     if is_admin:
-        print(f"[admin] inbound number={from_number} button={bool(button_id)}")
+        print(f"[admin] inbound number={mask_identifier(from_number)} button={bool(button_id)}")
         if button_id:
             parsed = intent_service.parse_admin_button(button_id)
             if parsed:

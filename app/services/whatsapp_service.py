@@ -5,16 +5,50 @@ está protegida: un fallo de la API NUNCA debe romper el webhook. No se imprimen
 tokens en consola bajo ninguna circunstancia.
 """
 
+import contextvars
+
 import httpx
 
 from app.config import settings
+
+# Número (phone_number_id) que RECIBIÓ el mensaje en curso. El webhook lo fija
+# por cada request para que el bot responda DESDE ese mismo número y no desde uno
+# fijo del .env. ContextVar = aislado por request (seguro en async).
+_phone_number_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "wa_phone_number_id", default=""
+)
+
+
+def set_active_phone_number_id(phone_number_id: str) -> None:
+    """Fija el número emisor para la request actual (lo llama el webhook)."""
+    if phone_number_id:
+        _phone_number_id_ctx.set(str(phone_number_id))
+
+
+def _active_phone_number_id() -> str:
+    """Número emisor: el que recibió el mensaje; si no, el del .env."""
+    return _phone_number_id_ctx.get() or settings.PHONE_NUMBER_ID
 
 
 def _base_url() -> str:
     return (
         f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/"
-        f"{settings.PHONE_NUMBER_ID}/messages"
+        f"{_active_phone_number_id()}/messages"
     )
+
+
+def _normalize_recipient(to: str) -> str:
+    """Asegura que el destinatario tenga código de país.
+
+    Los números nacionales (Perú: 9 dígitos) no son entregables por WhatsApp sin
+    el código de país. Si falta, se antepone DEFAULT_COUNTRY_CODE. Los números
+    que ya lo traen (>= 10 dígitos o que ya empiezan con el código) no se tocan.
+    """
+    digits = "".join(ch for ch in str(to or "") if ch.isdigit())
+    cc = (settings.DEFAULT_COUNTRY_CODE or "").strip()
+    if cc and digits and not digits.startswith(cc) and len(digits) <= 9:
+        return cc + digits
+    return digits
 
 
 def _headers() -> dict:
@@ -30,8 +64,7 @@ async def _post(payload: dict):
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(_base_url(), headers=_headers(), json=payload)
         if response.status_code >= 400:
-            # Importante: NO imprimir headers/tokens, solo el cuerpo de error de la API.
-            print(f"[whatsapp] error {response.status_code}: {response.text}")
+            print(f"[whatsapp] error status={response.status_code}")
             return None
         return response.json()
     except Exception as exc:  # noqa: BLE001 - el webhook no debe caerse por la red
@@ -47,7 +80,7 @@ async def send_whatsapp_message(to: str, message: str):
 async def send_text_message(to: str, message: str):
     payload = {
         "messaging_product": "whatsapp",
-        "to": to,
+        "to": _normalize_recipient(to),
         "type": "text",
         "text": {"body": message},
     }
@@ -70,7 +103,7 @@ async def send_button_message(to: str, body: str, buttons: list[dict]):
 
     payload = {
         "messaging_product": "whatsapp",
-        "to": to,
+        "to": _normalize_recipient(to),
         "type": "interactive",
         "interactive": {
             "type": "button",
@@ -120,7 +153,7 @@ async def send_list_message(
 
     payload = {
         "messaging_product": "whatsapp",
-        "to": to,
+        "to": _normalize_recipient(to),
         "type": "interactive",
         "interactive": interactive,
     }

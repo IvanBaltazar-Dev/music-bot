@@ -11,9 +11,11 @@ Todo mensaje saliente se registra en la hoja `Mensajes` para trazabilidad.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from app.config import settings
+from app.security import mask_identifier
 from app.repositories import (
     admin_repository,
     conversation_repository as conv_repo,
@@ -50,6 +52,10 @@ def _admin_label(numero: str) -> str:
     except Exception:  # noqa: BLE001
         name = ""
     return f"{name} ({digits})" if name else digits
+
+
+def _client_label(sol: dict, fallback: str = "Cliente sin nombre") -> str:
+    return str(sol.get("nombre_o_dni", "") or "").strip() or fallback
 
 
 def _extract_last_admin_action(observaciones: str) -> tuple[str, str]:
@@ -93,6 +99,44 @@ def _with_trace(sol: dict, message: str) -> str:
     return current + "\n" + trace
 
 
+def _parse_dt(value: str):
+    try:
+        dt = datetime.fromisoformat(str(value or ""))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _control_expired(conv: dict) -> bool:
+    hours = max(int(getattr(settings, "ADMIN_CONTROL_TIMEOUT_HOURS", 48) or 48), 1)
+    base = _parse_dt(conv.get("fecha_toma_control", "")) or _parse_dt(conv.get("fecha_ultima_interaccion", ""))
+    if not base:
+        return False
+    return datetime.now(timezone.utc) - base > timedelta(hours=hours)
+
+
+def _expire_control_for_client(client_number: str, admin_number: str, sol: dict | None = None) -> dict | None:
+    client = _only_digits(client_number)
+    admin = _only_digits(admin_number)
+    sol = sol or hiring_repo.get_active_by_client(client) or hiring_repo.get_by_client(client)
+    conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+    if sol:
+        code = sol.get("codigo_solicitud", "")
+        trace = f"Control de {_admin_label(admin)} vencio por inactividad"
+        if code:
+            hiring_repo.update(code, {
+                "estado": hiring_repo.ESTADO_ABIERTA,
+                "modo_atencion": "BOT",
+                "admin_asignado": "",
+                "observaciones": _with_trace(sol, trace),
+            })
+            sol = hiring_repo.get_by_code(code) or sol
+    print(f"[admin] control_expired client={mask_identifier(client)} admin={mask_identifier(admin)}")
+    return sol
+
+
 def _clean_notes(observaciones: str) -> str:
     """Devuelve solo las notas legibles (sin el historial técnico [fecha] ...)."""
     if not observaciones:
@@ -116,7 +160,7 @@ _DIR_LABEL = {
 def _format_transcript(client_number: str, nombre: str = "", limit: int = 5) -> str:
     """Arma un mini-historial de los últimos mensajes con el cliente."""
     try:
-        mensajes = msg_repo.recent_for_client(client_number, limit=limit)
+        mensajes = msg_repo.recent_for_client(client_number, limit=max(limit * 3, limit))
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] no se pudo leer el hilo: {exc.__class__.__name__}")
         mensajes = []
@@ -126,18 +170,52 @@ def _format_transcript(client_number: str, nombre: str = "", limit: int = 5) -> 
 
     quien_cliente = (nombre or "Cliente").split()[0]
     lineas = []
+    seen = set()
     for m in mensajes:
         direccion = str(m.get("direccion", "")).strip().upper()
+        if direccion in {msg_repo.ADMIN_A_CLIENTE, msg_repo.ADMIN_INTERNO, msg_repo.CLIENTE_A_ADMIN}:
+            continue
         icono = _DIR_LABEL.get(direccion, "•")
         quien = quien_cliente if icono == "👤" else ("Bot" if icono == "🤖" else "Tú")
         texto = str(m.get("texto", "")).strip().replace("\n", " ")
         if not texto:
             continue
+        dedupe_key = (direccion, " ".join(texto.lower().split()))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         if len(texto) > 90:
             texto = texto[:87] + "…"
         lineas.append(f"{icono} {quien}: {texto}")
 
-    return "\n".join(lineas)
+    return "\n".join(lineas[-limit:])
+
+
+def _conversation_context_line(sol: dict, transcript: str) -> str:
+    client = _only_digits(sol.get("numero_cliente", ""))
+    nombre = _client_label(sol, client)
+    ultimo_cliente = str(sol.get("ultimo_mensaje_cliente", "") or "").strip()
+    request_data = {
+        "tipo_evento": sol.get("tipo_evento", ""),
+        "fecha_evento": sol.get("fecha_evento", ""),
+        "horario_evento": sol.get("horario_evento", ""),
+        "localidad": sol.get("localidad", ""),
+        "observaciones": _clean_notes(sol.get("observaciones", "")),
+        "ultimo_mensaje_cliente": ultimo_cliente,
+    }
+    try:
+        from app.services import gemini_service
+        ai_summary = gemini_service.summarize_admin_context(nombre, request_data, transcript)
+        if ai_summary:
+            return ai_summary
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] no se pudo resumir con IA: {exc.__class__.__name__}")
+
+    if ultimo_cliente:
+        return f"Contexto anterior: ultimo mensaje del cliente: {ultimo_cliente}"
+    if transcript:
+        return "Contexto anterior: revisa los ultimos mensajes para retomar sin perder el hilo."
+    return "Contexto anterior: no hay historial de mensajes guardado; retoma con los datos de la solicitud."
 
 
 def admin_numbers() -> list[str]:
@@ -237,10 +315,11 @@ def _request_summary(sol: dict) -> str:
     from app.services.formatting_service import format_datetime_peru
 
     code = sol.get('codigo_solicitud', '-')
-    cliente = sol.get('nombre_o_dni', '-')
+    cliente = _client_label(sol)
     numero = sol.get('numero_cliente', '-')
     fecha_reg = sol.get('fecha_registro', '')
     notas = _clean_notes(sol.get('observaciones', ''))
+    ultimo_cliente = str(sol.get("ultimo_mensaje_cliente", "") or "").strip()
 
     fecha_fmt = format_datetime_peru(fecha_reg) if fecha_reg else "-"
 
@@ -254,6 +333,8 @@ def _request_summary(sol: dict) -> str:
     if detalle:
         bloques.append(detalle)
 
+    if ultimo_cliente:
+        bloques.append(f"Ultimo mensaje del cliente: {ultimo_cliente}")
     if notas:
         bloques.append(f"📝 Nota: {notas}")
 
@@ -299,7 +380,7 @@ async def notify_request_update(sol: dict, texto_cliente: str) -> None:
     cuerpo = (
         "💬 El cliente volvió a escribir sobre una solicitud abierta\n\n"
         f"Solicitud: {code or '-'}\n"
-        f"Cliente: {sol.get('nombre_o_dni', '-')}\n"
+        f"Cliente: {_client_label(sol)}\n"
         f"WhatsApp: {sol.get('numero_cliente', '-')}\n"
         f"Estado: {sol.get('estado', '-')}\n\n"
         "Mensaje:\n"
@@ -351,7 +432,10 @@ async def take_control(admin_number: str, code: str) -> str | None:
             buttons=[{"id": intent_service.view_id(code), "title": "Ver solicitud"}],
             codigo=code,
         )
-        print(f"[admin] take_control_blocked code={code} assigned={assigned_admin} requester={admin}")
+        print(
+            f"[admin] take_control_blocked code={code} "
+            f"assigned={mask_identifier(assigned_admin)} requester={mask_identifier(admin)}"
+        )
         return None
     if not client:
         await send_text_message(admin_number, f"La solicitud {code} no tiene número de cliente válido.")
@@ -391,7 +475,7 @@ async def take_control(admin_number: str, code: str) -> str | None:
 async def _activate_control(admin_number: str, code: str, sol: dict) -> str | None:
     client = _only_digits(sol.get("numero_cliente", ""))
     admin = _only_digits(admin_number)
-    print(f"[admin] take_control code={code} admin={admin} client={client}")
+    print(f"[admin] take_control code={code} admin={mask_identifier(admin)} client={mask_identifier(client)}")
     remember_last_code(admin_number, code)
 
     hiring_repo.update(code, {
@@ -405,7 +489,8 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     await _send_admin(
         admin_number,
         _context_summary(sol, header=f"Atiendes a {nombre_cliente} ({code})")
-        + "\n\nEscribe tu respuesta y se le envía al cliente.\n"
+        + "\n\nPuedes pedir el resumen de la conversacion con *#resumen* o *#ultimos mensajes*.\n\n"
+        "*TODO LO QUE ENVIES DE AHORA EN ADELANTE SERA ENVIADO AL CLIENTE*\n"
         "Para salir sin enviar nada: *#salir*",
         codigo=code,
     )
@@ -440,9 +525,10 @@ def _context_summary(sol: dict, header: str = "") -> str:
     client = _only_digits(sol.get("numero_cliente", ""))
     nombre_cliente = sol.get("nombre_o_dni", client) or client
     notas = _clean_notes(sol.get("observaciones", ""))
+    ultimo_cliente = str(sol.get("ultimo_mensaje_cliente", "") or "").strip()
     accion, cuando = _extract_last_admin_action(sol.get("observaciones", ""))
     detalle = _event_details(sol)
-    transcript = _format_transcript(client, nombre_cliente)
+    transcript = _format_transcript(client, nombre_cliente, limit=8)
 
     bloques = []
     if header:
@@ -450,6 +536,7 @@ def _context_summary(sol: dict, header: str = "") -> str:
     bloques.append(f"📞 {client}")
     if detalle:
         bloques.append(detalle)
+    bloques.append(_conversation_context_line(sol, transcript))
     if notas:
         bloques.append(f"📝 Nota: {notas}")
 
@@ -590,12 +677,33 @@ def get_last_code(admin_number: str) -> str:
     return _last_code_by_admin.get(_only_digits(admin_number), "")
 
 
-async def send_client_summary(admin_number: str, code: str = "") -> None:
+def _resolve_request_reference(admin_number: str, text: str = "", code: str = "") -> dict | None:
+    ref = (code or "").strip()
+    if ref:
+        sol = hiring_repo.get_by_code(ref)
+        if sol:
+            return sol
+
+    code_match = re.search(r"\bSOL-\d+\b", (text or "").upper())
+    if code_match:
+        sol = hiring_repo.get_by_code(code_match.group(0))
+        if sol:
+            return sol
+
+    for digits in reversed(re.findall(r"\d{6,}", text or "")):
+        sol = hiring_repo.get_by_client_fragment(digits)
+        if sol:
+            return sol
+
+    last_code = get_last_code(admin_number)
+    return hiring_repo.get_by_code(last_code) if last_code else None
+
+
+async def send_client_summary(admin_number: str, code: str = "", text: str = "") -> None:
     """Muestra el resumen/contexto de un cliente para que el admin entienda a
     quién atiende. Si no se indica código, usa el último que tocó este admin;
     si no hay, la solicitud más reciente."""
-    code = code or get_last_code(admin_number)
-    sol = hiring_repo.get_by_code(code) if code else None
+    sol = _resolve_request_reference(admin_number, text=text, code=code)
     if not sol:
         recientes = hiring_repo.get_recent(limit=1)
         sol = recientes[0] if recientes else None
@@ -610,7 +718,7 @@ async def send_client_summary(admin_number: str, code: str = "") -> None:
     code = sol.get("codigo_solicitud", "")
     remember_last_code(admin_number, code)
     estado = str(sol.get("estado", "-")).strip().upper()
-    cliente = sol.get("nombre_o_dni", sol.get("numero_cliente", "-"))
+    cliente = _client_label(sol, sol.get("numero_cliente", "-"))
     resumen = _context_summary(sol, header=f"{cliente} ({code})")
     await _send_admin(
         admin_number,
@@ -629,7 +737,7 @@ async def view_request(admin_number: str, code: str) -> None:
     estado = str(sol.get("estado", "-")).strip().upper()
     admin_label = _admin_label(sol.get('admin_asignado', '')) if sol.get('admin_asignado') else 'Sin asignar'
 
-    resumen = _context_summary(sol, header=f"{sol.get('nombre_o_dni', sol.get('numero_cliente', '-'))} ({code})")
+    resumen = _context_summary(sol, header=f"{_client_label(sol, sol.get('numero_cliente', '-'))} ({code})")
     estado_block = f"Estado: {_estado_label(estado)}\nResponsable: {admin_label}"
 
     await _send_admin(admin_number, resumen + "\n\n" + estado_block, codigo=code)
@@ -802,7 +910,7 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
         mensajes_ok.get(final_state, f"✅ {code} quedó en {_estado_label(final_state)}."),
         codigo=code,
     )
-    print(f"[admin] state_by_code code={code} state={final_state} admin={admin}")
+    print(f"[admin] state_by_code code={code} state={final_state} admin={mask_identifier(admin)}")
     return {"codigo_solicitud": code, "estado": final_state, "numero_cliente": client}
 
 
@@ -1094,7 +1202,23 @@ def controlling_client_of(admin_number: str) -> str | None:
             if _only_digits(r.get("admin_numero", "")) == admin:
                 client = _only_digits(r.get("numero_usuario", ""))
                 if client:
-                    print(f"[admin] control activo por conversacion admin={admin} client={client}")
+                    sol = hiring_repo.get_active_by_client(client) or hiring_repo.get_by_client(client) or {}
+                    sol_estado = str(sol.get("estado", "")).strip().upper()
+                    sol_admin = _only_digits(sol.get("admin_asignado", ""))
+                    if sol_estado != hiring_repo.ESTADO_EN_CONVERSACION or not _same_number(sol_admin, admin):
+                        try:
+                            conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[admin] no se pudo limpiar control stale: {exc.__class__.__name__}")
+                        print(
+                            "[admin] control stale ignorado "
+                            f"admin={mask_identifier(admin)} client={mask_identifier(client)}"
+                        )
+                        continue
+                    print(
+                        "[admin] control activo por conversacion "
+                        f"admin={mask_identifier(admin)} client={mask_identifier(client)}"
+                    )
                     return client
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] error buscando control activo: {exc.__class__.__name__}")
@@ -1105,12 +1229,15 @@ def controlling_client_of(admin_number: str) -> str | None:
             client = _only_digits(sol.get("numero_cliente", ""))
             code = sol.get("codigo_solicitud", "")
             if client:
-                print(f"[admin] control activo por solicitud admin={admin} client={client} code={code}")
+                print(
+                    "[admin] control activo por solicitud "
+                    f"admin={mask_identifier(admin)} client={mask_identifier(client)} code={code}"
+                )
                 return client
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] error buscando solicitud en control: {exc.__class__.__name__}")
 
-    print(f"[admin] sin control activo admin={admin}")
+    print(f"[admin] sin control activo admin={mask_identifier(admin)}")
     return None
 
 
@@ -1123,8 +1250,26 @@ def control_context_for_client(client_number: str) -> dict | None:
             admin = _only_digits(conv.get("admin_numero", ""))
             if admin:
                 sol = hiring_repo.get_active_by_client(client) or hiring_repo.get_by_client(client) or {}
+                sol_estado = str(sol.get("estado", "")).strip().upper()
+                sol_admin = _only_digits(sol.get("admin_asignado", ""))
+                if sol_estado != hiring_repo.ESTADO_EN_CONVERSACION or not _same_number(sol_admin, admin):
+                    try:
+                        conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[admin] no se pudo limpiar control stale cliente: {exc.__class__.__name__}")
+                    print(
+                        "[admin] control stale de cliente ignorado "
+                        f"client={mask_identifier(client)} admin={mask_identifier(admin)}"
+                    )
+                    return None
+                if _control_expired(conv):
+                    _expire_control_for_client(client, admin, sol)
+                    return None
                 code = sol.get("codigo_solicitud", "")
-                print(f"[admin] cliente bajo control por conversacion client={client} admin={admin} code={code}")
+                print(
+                    "[admin] cliente bajo control por conversacion "
+                    f"client={mask_identifier(client)} admin={mask_identifier(admin)} code={code}"
+                )
                 return {"client": client, "admin": admin, "code": code, "source": "conversation"}
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] error leyendo control de cliente: {exc.__class__.__name__}")
@@ -1136,8 +1281,18 @@ def control_context_for_client(client_number: str) -> dict | None:
         estado = str(sol.get("estado", "")).strip().upper()
         admin = _only_digits(sol.get("admin_asignado", ""))
         if estado == hiring_repo.ESTADO_EN_CONVERSACION and admin:
+            faux_conv = {
+                "fecha_toma_control": sol.get("fecha_toma_control", ""),
+                "fecha_ultima_interaccion": sol.get("fecha_ultima_interaccion", ""),
+            }
+            if _control_expired(faux_conv):
+                _expire_control_for_client(client, admin, sol)
+                return None
             code = sol.get("codigo_solicitud", "")
-            print(f"[admin] cliente bajo control por solicitud client={client} admin={admin} code={code}")
+            print(
+                "[admin] cliente bajo control por solicitud "
+                f"client={mask_identifier(client)} admin={mask_identifier(admin)} code={code}"
+            )
             return {"client": client, "admin": admin, "code": code, "source": "request"}
     except Exception as exc:  # noqa: BLE001
         print(f"[admin] error leyendo solicitud controlada: {exc.__class__.__name__}")
@@ -1155,7 +1310,7 @@ async def relay_admin_to_client(admin_number: str, client_number: str, texto: st
         await send_text_message(client_clean, texto)
         sent_ok = True
     except Exception as exc:  # noqa: BLE001
-        print(f"[admin] error enviando mensaje a cliente {client_clean}: {exc.__class__.__name__}: {str(exc)[:100]}")
+        print(f"[admin] error enviando mensaje a cliente {mask_identifier(client_clean)}: {exc.__class__.__name__}")
         await _send_admin(admin_clean, f"⚠️ Error al enviar a {client_clean}: {exc.__class__.__name__}")
 
     # Guarda el registro del intento (aunque haya fallado)
@@ -1168,7 +1323,7 @@ async def relay_admin_to_client(admin_number: str, client_number: str, texto: st
             "admin_numero": admin_clean,
         })
     except Exception as exc:  # noqa: BLE001
-        print(f"[admin] error guardando mensaje admin→cliente: {exc.__class__.__name__}: {str(exc)[:100]}")
+        print(f"[admin] error guardando mensaje admin→cliente: {exc.__class__.__name__}")
 
 
 async def relay_client_to_admin(client_number: str, admin_number: str, texto: str,
@@ -1209,7 +1364,7 @@ async def notify_followers_new_message(client_number: str, texto: str) -> None:
         return
     sol = hiring_repo.get_by_client(client_number) or {}
     code = sol.get("codigo_solicitud", "")
-    nombre = sol.get("nombre_o_dni", "-")
+    nombre = _client_label(sol)
     cuerpo = (
         "💬 Nuevo mensaje del cliente\n\n"
         f"Solicitud: {code or '-'}\n"
@@ -1279,7 +1434,10 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
         "La conversacion vuelve al bot y este caso ya no cuenta como solicitud activa.",
         codigo=code,
     )
-    print(f"[admin] request_closed code={code} state={final_state} admin={admin} client={client}")
+    print(
+        f"[admin] request_closed code={code} state={final_state} "
+        f"admin={mask_identifier(admin)} client={mask_identifier(client)}"
+    )
     return {"codigo_solicitud": code, "estado": final_state, "numero_cliente": client}
 
 
@@ -1287,26 +1445,60 @@ async def release_control(admin_number: str) -> bool:
     """El administrador devuelve la conversación al bot."""
     admin = _only_digits(admin_number)
     client = controlling_client_of(admin_number)
-    if not client:
+    trace = f"[{datetime.now(timezone.utc).isoformat()}] {_admin_label(admin)} solto control"
+
+    released_clients = []
+    released_sols = []
+    try:
+        released_clients = conv_repo.release_control_for_admin(admin)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error liberando conversaciones: {exc.__class__.__name__}")
+    try:
+        released_sols = hiring_repo.release_control_by_admin(admin, trace)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] error liberando solicitudes: {exc.__class__.__name__}")
+
+    if client and client not in released_clients:
+        try:
+            conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
+            released_clients.append(client)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[admin] error liberando conversacion actual: {exc.__class__.__name__}")
+
+    sol = hiring_repo.get_by_client(client) if client else None
+    if sol and str(sol.get("estado", "")).strip().upper() == hiring_repo.ESTADO_EN_CONVERSACION:
+        code = sol.get("codigo_solicitud", "")
+        try:
+            ok = hiring_repo.update(code, {
+                "estado": hiring_repo.ESTADO_ABIERTA,
+                "modo_atencion": "BOT",
+                "admin_asignado": "",
+                "observaciones": _with_trace(sol, f"{_admin_label(admin)} solto control"),
+            })
+            if ok:
+                released_sols.append(sol)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[admin] error liberando solicitud actual: {exc.__class__.__name__}")
+
+    still_client = controlling_client_of(admin_number)
+    if still_client:
         await send_text_message(
             admin_number,
-            "No estás atendiendo ninguna conversación en este momento.",
+            "Intente salir, pero todavia veo una conversacion activa. "
+            "No envies mensajes normales aun; usa #salir otra vez o revisa la hoja.",
         )
         return False
-    conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
-    sol = hiring_repo.get_by_client(client)
-    if sol:
-        code = sol.get("codigo_solicitud", "")
-        trace = f"{_admin_label(admin)} solto control"
-        hiring_repo.update(code, {
-            "estado": hiring_repo.ESTADO_ABIERTA,
-            "modo_atencion": "BOT",
-            "admin_asignado": "",
-            "observaciones": _with_trace(sol, trace),
-        })
+
+    if not client and not released_clients and not released_sols:
+        await send_text_message(
+            admin_number,
+            "No estas atendiendo ninguna conversacion en este momento.",
+        )
+        return False
+
     await send_text_message(
         admin_number,
-        "Saliste de la conversación. El bot retoma la atención automática.",
+        "Saliste de la conversacion. El bot retoma la atencion automatica.",
     )
     return True
 

@@ -42,3 +42,27 @@ def recent_for_client(numero_cliente: str, limit: int = 6) -> list[dict]:
         hilo.append(r)
     # Las filas ya vienen en orden de inserción; tomamos las últimas.
     return hilo[-limit:]
+
+
+def last_admin_for_client(numero_cliente: str) -> str:
+    """Ultimo administrador que escribio directamente al cliente."""
+    target = "".join(ch for ch in str(numero_cliente) if ch.isdigit())
+    if not target:
+        return ""
+
+    try:
+        rows = sheets_client.read_records(SHEET_MESSAGES)
+    except Exception:  # noqa: BLE001
+        return ""
+
+    for r in reversed(rows):
+        digits = "".join(ch for ch in str(r.get("numero_usuario", "")) if ch.isdigit())
+        if digits != target:
+            continue
+        direccion = str(r.get("direccion", "")).strip().upper()
+        if direccion != ADMIN_A_CLIENTE:
+            continue
+        admin = "".join(ch for ch in str(r.get("admin_numero", "")) if ch.isdigit())
+        if admin:
+            return admin
+    return ""

@@ -159,6 +159,8 @@ _ADMIN_KEYWORDS = {
     ADMIN_VIEW_EVENTS: ["ver eventos", "ver agenda", "listar eventos", "lista de eventos", "agenda"],
     ADMIN_VIEW_REQUESTS: ["ver solicitudes", "solicitudes", "leads", "cotizaciones"],
     ADMIN_CLIENT_SUMMARY: [
+        "resumen", "resume", "resumir", "historial", "contexto", "recapitular",
+        "ultimos mensajes", "ultimos mensaje", "ultimas conversaciones",
         "resumen de la conversacion", "resumen de la conversación",
         "resumen del cliente", "resumen de este cliente", "resumen del chat",
         "de que hablamos", "de que hablo", "que queria", "que quiere el cliente",

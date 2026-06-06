@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import os
 import threading
+import traceback
+import uuid
 from datetime import datetime, timezone
 
 from app.config import settings
-from app.repositories import sheets_schema
+from app.security import safe_exception, sanitize_text
+from app.repositories import sheets_schema, supabase_store
 
 # ---------------------------------------------------------------------------
 # Estado interno
@@ -32,6 +35,7 @@ _lock = threading.RLock()
 _use_sheets = False
 _spreadsheet = None
 _ws_cache: dict = {}
+_position_mode: set[str] = set()
 
 # Almacén en memoria (fallback). Se pierde al reiniciar el proceso.
 # { nombre_hoja: list[dict] }
@@ -42,11 +46,54 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _record_internal_error(modulo: str, exc: BaseException, sheet_name: str = "") -> None:
+    if sheet_name == sheets_schema.SHEET_ERRORS:
+        return
+    headers = sheets_schema.headers_for(sheets_schema.SHEET_ERRORS)
+    record = {
+        "id_error": "ERR-" + uuid.uuid4().hex[:8].upper(),
+        "fecha_hora": now_iso(),
+        "modulo": modulo,
+        "numero_usuario": "",
+        "mensaje_usuario": sheet_name,
+        "error": safe_exception(exc, include_message=True),
+        "stacktrace": sanitize_text(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            limit=1500,
+        ),
+        "raw_json": "",
+        "estado": "NUEVO",
+    }
+    row = {h: record.get(h, "") for h in headers}
+    with _lock:
+        _mem.setdefault(sheets_schema.SHEET_ERRORS, []).append(row)
+    if _use_sheets:
+        try:
+            ws = _get_ws(sheets_schema.SHEET_ERRORS)
+            if ws is not None:
+                ws.append_row([row[h] for h in headers],
+                              value_input_option="USER_ENTERED",
+                              table_range="A1")
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Inicialización perezosa y tolerante a fallos
 # ---------------------------------------------------------------------------
 def _init() -> None:
     global _use_sheets, _spreadsheet
+
+    if settings.storage_backend == "supabase":
+        if settings.supabase_enabled:
+            print("[storage] usando Supabase.")
+        else:
+            print("[storage] Supabase seleccionado, pero faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY. Usando memoria.")
+        return
+
+    if settings.storage_backend == "memory":
+        print("[storage] usando memoria temporal (STORAGE_BACKEND=memory).")
+        return
 
     if not settings.GOOGLE_SHEETS_ENABLED:
         print("[sheets] deshabilitado (GOOGLE_SHEETS_ENABLED=false). Usando memoria.")
@@ -85,6 +132,14 @@ def is_enabled() -> bool:
     return _use_sheets
 
 
+def active_backend() -> str:
+    if settings.storage_backend == "supabase" and settings.supabase_enabled:
+        return "supabase"
+    if _use_sheets:
+        return "sheets"
+    return "memory"
+
+
 # ---------------------------------------------------------------------------
 # Acceso a hojas
 # ---------------------------------------------------------------------------
@@ -118,6 +173,7 @@ def _get_ws(name: str, create: bool = True):
         return ws
     except Exception as exc:  # noqa: BLE001
         print(f"[sheets] error accediendo a la hoja '{name}': {exc.__class__.__name__}")
+        _record_internal_error("sheets_client._get_ws", exc, name)
         return None
 
 
@@ -127,6 +183,19 @@ def ensure_sheets() -> dict:
     Devuelve un resumen {creadas: [...], existentes: [...]} o un aviso si está
     en modo memoria.
     """
+    if settings.storage_backend == "supabase":
+        try:
+            return supabase_store.ensure_schema()
+        except Exception as exc:  # noqa: BLE001
+            detalle = sanitize_text(exc, limit=300)
+            print(f"[supabase] no se pudo verificar esquema: {exc.__class__.__name__}")
+            if "PGRST205" in detalle or "Could not find the table" in detalle:
+                print("[supabase] ⚠️ Las tablas NO existen. Aplica la migración "
+                      "supabase/migrations/202606020001_initial_crm_schema.sql en "
+                      "el SQL Editor de Supabase.")
+            _record_internal_error("sheets_client.ensure_supabase", exc, "supabase")
+            return {"modo": "supabase_error", "error": detalle}
+
     if not _use_sheets or _spreadsheet is None:
         return {"modo": "memoria", "creadas": [], "existentes": []}
 
@@ -150,22 +219,73 @@ def ensure_sheets() -> dict:
 # ---------------------------------------------------------------------------
 def read_records(sheet_name: str) -> list[dict]:
     """Devuelve todas las filas como lista de dicts (claves = encabezados)."""
+    if settings.storage_backend == "supabase" and settings.supabase_enabled:
+        try:
+            return supabase_store.read_records(sheet_name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[supabase] error leyendo '{sheet_name}': {exc.__class__.__name__}")
+            _record_internal_error("supabase_store.read_records", exc, sheet_name)
+            return []
+
     if _use_sheets:
         ws = _get_ws(sheet_name)
         if ws is not None:
+            if sheet_name in _position_mode:
+                try:
+                    return _read_records_by_position(sheet_name, ws)
+                except Exception as exc:  # noqa: BLE001
+                    _record_internal_error("sheets_client.read_records_position", exc, sheet_name)
+                    return []
             try:
                 return ws.get_all_records()
             except Exception as exc:  # noqa: BLE001
                 print(f"[sheets] error leyendo '{sheet_name}': {exc.__class__.__name__}")
+                _record_internal_error("sheets_client.read_records", exc, sheet_name)
+                _position_mode.add(sheet_name)
+                try:
+                    return _read_records_by_position(sheet_name, ws)
+                except Exception as fallback_exc:  # noqa: BLE001
+                    _record_internal_error("sheets_client.read_records_fallback", fallback_exc, sheet_name)
                 return []
     with _lock:
         return [dict(r) for r in _mem.get(sheet_name, [])]
+
+
+def _records_from_values(sheet_name: str, values: list[list[str]]) -> list[tuple[int, dict]]:
+    headers = sheets_schema.headers_for(sheet_name)
+    rows = []
+    if not headers or len(values) <= 1:
+        return rows
+    for idx, row_values in enumerate(values[1:], start=2):
+        if not any(str(v).strip() for v in row_values):
+            continue
+        rows.append((
+            idx,
+            {h: row_values[col] if col < len(row_values) else "" for col, h in enumerate(headers)},
+        ))
+    return rows
+
+
+def _read_records_by_position(sheet_name: str, ws) -> list[dict]:
+    values = ws.get_all_values()
+    records = [r for _, r in _records_from_values(sheet_name, values)]
+    if records:
+        print(f"[sheets] lectura por posicion para '{sheet_name}' ({len(records)} filas).")
+    return records
 
 
 def append_record(sheet_name: str, record: dict) -> bool:
     """Agrega una fila ordenada según los encabezados del esquema."""
     headers = sheets_schema.headers_for(sheet_name)
     row = {h: record.get(h, "") for h in headers}
+
+    if settings.storage_backend == "supabase" and settings.supabase_enabled:
+        try:
+            return supabase_store.append_record(sheet_name, row)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[supabase] error guardando en '{sheet_name}': {exc.__class__.__name__}")
+            _record_internal_error("supabase_store.append_record", exc, sheet_name)
+            return False
 
     if _use_sheets:
         for attempt in (1, 2):
@@ -185,8 +305,9 @@ def append_record(sheet_name: str, record: dict) -> bool:
             except Exception as exc:  # noqa: BLE001
                 print(
                     f"[sheets] error guardando en '{sheet_name}' "
-                    f"(intento {attempt}/2): {exc.__class__.__name__}: {str(exc)[:200]}"
+                    f"(intento {attempt}/2): {exc.__class__.__name__}"
                 )
+                _record_internal_error("sheets_client.append_record", exc, sheet_name)
                 _ws_cache.pop(sheet_name, None)
 
     with _lock:
@@ -198,6 +319,14 @@ def append_record(sheet_name: str, record: dict) -> bool:
 
 def find_record(sheet_name: str, key_col: str, key_val: str) -> dict | None:
     """Primer registro cuyo key_col coincide (str, case-insensitive en bordes)."""
+    if settings.storage_backend == "supabase" and settings.supabase_enabled:
+        try:
+            return supabase_store.find_record(sheet_name, key_col, key_val)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[supabase] error buscando en '{sheet_name}': {exc.__class__.__name__}")
+            _record_internal_error("supabase_store.find_record", exc, sheet_name)
+            return None
+
     target = str(key_val).strip()
     for r in read_records(sheet_name):
         if str(r.get(key_col, "")).strip() == target:
@@ -214,9 +343,39 @@ def update_record(sheet_name: str, key_col: str, key_val: str, updates: dict) ->
     headers = sheets_schema.headers_for(sheet_name)
     target = str(key_val).strip()
 
+    if settings.storage_backend == "supabase" and settings.supabase_enabled:
+        try:
+            return supabase_store.update_record(sheet_name, key_col, key_val, updates)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[supabase] error actualizando '{sheet_name}': {exc.__class__.__name__}")
+            _record_internal_error("supabase_store.update_record", exc, sheet_name)
+            return False
+
+    def _update_by_position(ws) -> bool:
+        values = ws.get_all_values()
+        for row_number, record in _records_from_values(sheet_name, values):
+            if str(record.get(key_col, "")).strip() == target:
+                merged = dict(record)
+                merged.update(updates)
+                ordered = [merged.get(h, "") for h in headers]
+                ws.update(
+                    f"A{row_number}",
+                    [ordered],
+                    value_input_option="USER_ENTERED",
+                )
+                print(f"[sheets] actualizacion por posicion para '{sheet_name}' fila {row_number}.")
+                return True
+        return False
+
     if _use_sheets:
         ws = _get_ws(sheet_name)
         if ws is not None:
+            if sheet_name in _position_mode:
+                try:
+                    return _update_by_position(ws)
+                except Exception as exc:  # noqa: BLE001
+                    _record_internal_error("sheets_client.update_record_position", exc, sheet_name)
+                    return False
             try:
                 records = ws.get_all_records()
                 for idx, r in enumerate(records):
@@ -234,6 +393,12 @@ def update_record(sheet_name: str, key_col: str, key_val: str, updates: dict) ->
                 return False
             except Exception as exc:  # noqa: BLE001
                 print(f"[sheets] error actualizando '{sheet_name}': {exc.__class__.__name__}")
+                _record_internal_error("sheets_client.update_record", exc, sheet_name)
+                _position_mode.add(sheet_name)
+                try:
+                    return _update_by_position(ws)
+                except Exception as fallback_exc:  # noqa: BLE001
+                    _record_internal_error("sheets_client.update_record_fallback", fallback_exc, sheet_name)
                 return False
 
     with _lock:
@@ -253,7 +418,7 @@ def seed_memory(sheet_name: str, rows: list[dict]) -> None:
     Útil para que el bot funcione de forma demostrable sin Sheets configurado.
     Si Sheets está habilitado, este sembrado se ignora (la hoja manda).
     """
-    if _use_sheets:
+    if _use_sheets or settings.storage_backend == "supabase":
         return
     headers = sheets_schema.headers_for(sheet_name)
     with _lock:

@@ -1,7 +1,11 @@
+import json
+
 from fastapi import APIRouter, Request, Query, HTTPException
 
 from app.config import settings
+from app.security import constant_time_equals, verify_meta_signature
 from app.services.conversation_service import handle_incoming_message
+from app.services import whatsapp_service
 
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
@@ -12,10 +16,23 @@ async def verify_webhook(
     hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
     hub_challenge: str | None = Query(default=None, alias="hub.challenge")
 ):
-    if hub_mode == "subscribe" and hub_verify_token == settings.VERIFY_TOKEN:
-        return int(hub_challenge)
+    if (
+        settings.VERIFY_TOKEN
+        and hub_mode == "subscribe"
+        and constant_time_equals(hub_verify_token, settings.VERIFY_TOKEN)
+    ):
+        return hub_challenge or ""
 
-    raise HTTPException(status_code=403, detail="Token inválido")
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
+def _extract_phone_number_id(body: dict) -> str:
+    """phone_number_id del número que RECIBIÓ el mensaje (value.metadata)."""
+    try:
+        value = body["entry"][0]["changes"][0]["value"]
+        return str(value.get("metadata", {}).get("phone_number_id", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _extract_message(body: dict):
@@ -53,12 +70,25 @@ def _extract_message(body: dict):
 
 @router.post("")
 async def receive_message(request: Request):
+    raw_body = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    if not verify_meta_signature(raw_body, signature, settings.WHATSAPP_APP_SECRET):
+        print("[whatsapp] webhook rechazado por firma invalida")
+        raise HTTPException(status_code=403, detail="forbidden")
+
     try:
-        body = await request.json()
-    except Exception:
+        body = json.loads(raw_body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
         return {"status": "ignored", "reason": "invalid_body"}
 
     try:
+        # Responder SIEMPRE desde el número que recibió el mensaje.
+        pnid = _extract_phone_number_id(body)
+        if pnid:
+            whatsapp_service.set_active_phone_number_id(pnid)
+            if settings.PHONE_NUMBER_ID and pnid != settings.PHONE_NUMBER_ID:
+                print("[whatsapp] mensaje recibido en un phone_number_id distinto al configurado")
+
         from_number, text, button_id, profile_name = _extract_message(body)
 
         if not from_number or (not text and not button_id):
@@ -72,7 +102,7 @@ async def receive_message(request: Request):
         )
         return {"status": "received"}
 
-    except Exception as e:
+    except Exception as exc:
         # Nunca propagar errores: WhatsApp reintentaría el webhook.
-        print("Error procesando webhook:", e)
-        return {"status": "error", "detail": str(e)}
+        print(f"[whatsapp] error procesando webhook: {exc.__class__.__name__}")
+        return {"status": "error"}

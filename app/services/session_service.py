@@ -22,12 +22,13 @@ from app.models.session import (
     STATE_HIRE_STEP1,
     STATE_HIRE_STEP2,
     STATE_HIRE_STEP3,
+    STATE_HIRE_CONFIRM,
     STATE_ADMIN_EVENT_COLLECT,
     STATE_ADMIN_EVENT_CONFIRM,
     HIRE_STATES,
     ADMIN_EVENT_STATES,
 )
-from app.services import locality_service, text_utils
+from app.services import gemini_service, locality_service, text_utils
 
 # --- Almacén de sesiones en memoria ---
 _sessions: dict[str, Session] = {}
@@ -460,6 +461,47 @@ def _store_hire_details(session: Session, answer: str, *, include_place_date: bo
         session.data["horario_evento"] = parsed["hora"]
 
 
+def _ai_fill_missing(session: Session, answer: str) -> None:
+    """Cuando el regex no entendió, la IA interpreta y completa lo que falte.
+    Marca los campos rellenados por IA como 'por confirmar'."""
+    faltan = set(_missing_step1(session.data)) | set(_missing_step2(session.data))
+    if not faltan:
+        return
+    ai = gemini_service.interpret_event_fields(answer)
+    if not ai:
+        return
+    pendientes = session.data.setdefault("por_confirmar", [])
+    mapping = {"fecha_evento": "fecha", "horario_evento": "hora", "tipo_evento": "tipo"}
+    for field, ai_key in mapping.items():
+        if field in faltan and ai.get(ai_key):
+            session.data[field] = ai[ai_key]
+            if field not in pendientes:
+                pendientes.append(field)
+
+
+def _accept_after_retries(session: Session, answer: str, missing: list[str]) -> None:
+    """Anti-bucle: tras varios intentos, acepta y sigue para no trabar al cliente,
+    y marca el/los campo(s) para que el admin lo confirme luego.
+
+    Para fecha/hora guardamos lo que dijo el cliente (suele ser una referencia
+    válida que el regex no captó, ej 'fin de semana'). Para lugar/tipo usamos un
+    marcador y conservamos el texto del cliente en observaciones."""
+    ans = (answer or "").strip()
+    pendientes = session.data.setdefault("por_confirmar", [])
+    for field in missing:
+        if field in ("fecha_evento", "horario_evento"):
+            session.data[field] = ans or "(por confirmar)"
+        else:
+            session.data[field] = "(por confirmar)"
+        if field not in pendientes:
+            pendientes.append(field)
+    # Si pusimos marcadores, guardamos lo que dijo el cliente como pista.
+    if ans and any(f in ("localidad", "tipo_evento") for f in missing):
+        obs = str(session.data.get("observaciones", "") or "").strip()
+        pista = f"Cliente dijo: \"{ans}\"."
+        session.data["observaciones"] = (obs + " " + pista).strip() if obs else pista
+
+
 def _ask_hire_step2(session: Session):
     frase = session.data.get("frase_contratacion") or locality_service.GENERIC_CONTRATACION
     _touch(session, STATE_HIRE_STEP2)
@@ -474,9 +516,12 @@ def _ask_hire_step2(session: Session):
 def _ask_hire_step3(session: Session):
     _touch(session, STATE_HIRE_STEP3)
     return _resp(
-        "¡Listo! A nombre de quién hacemos la reserva ?, déjame tu nombre completo o DNI.\n\n"
-        "Te responderán por este mismo chat. Si prefieres una llamada, puedes indicar "
-        "a qué hora se te acomoda mejor."
+        "¡Listo! ¿A nombre de quién dejamos la solicitud? Puedes pasarme tu "
+        "nombre completo o DNI.\n\n"
+        "Si solo quieres cotizar por ahora o prefieres no dejar nombre, dímelo "
+        "y lo pasamos al manager con tu WhatsApp.\n\n"
+        "Te responderán por este mismo chat. Si prefieres una llamada, puedes "
+        "indicar a qué hora se te acomoda mejor."
     )
 
 
@@ -501,7 +546,17 @@ def _advance_hire(session: Session, answer: str):
         _store_hire_details(session, answer)
         missing = _missing_step1(session.data)
         if missing:
-            return _ask_missing_step1(missing)
+            _ai_fill_missing(session, answer)        # la IA intenta entender
+            missing = _missing_step1(session.data)
+        if missing:
+            intentos = session.data.get("step1_intentos", 0) + 1
+            session.data["step1_intentos"] = intentos
+            if intentos >= 2:                        # anti-bucle: aceptar y seguir
+                _accept_after_retries(session, answer, missing)
+                missing = _missing_step1(session.data)
+            else:
+                return _ask_missing_step1(missing)
+        session.data.pop("step1_intentos", None)
 
         if _missing_step2(session.data):
             return _ask_hire_step2(session)
@@ -511,7 +566,17 @@ def _advance_hire(session: Session, answer: str):
         _store_hire_details(session, answer, include_place_date=False)
         missing = _missing_step2(session.data)
         if missing:
-            return _ask_missing_step2(session, missing, answer)
+            _ai_fill_missing(session, answer)
+            missing = _missing_step2(session.data)
+        if missing:
+            intentos = session.data.get("step2_intentos", 0) + 1
+            session.data["step2_intentos"] = intentos
+            if intentos >= 2:
+                _accept_after_retries(session, answer, missing)
+                missing = _missing_step2(session.data)
+            else:
+                return _ask_missing_step2(session, missing, answer)
+        session.data.pop("step2_intentos", None)
 
         return _ask_hire_step3(session)
 
@@ -521,12 +586,54 @@ def _advance_hire(session: Session, answer: str):
         session.data["numero_contacto"] = contacto
         if observacion:
             session.data["observaciones"] = observacion
-        data = dict(session.data)
-        _touch(session, STATE_IDLE)
-        return _resp("", completed=True, kind="hire", data=data)
+        return _ask_hire_confirm(session)
+
+    if state == STATE_HIRE_CONFIRM:
+        norm = text_utils.normalize(answer)
+        if norm in _AFFIRMATIVE:
+            _annotate_pending(session)
+            data = dict(session.data)
+            _touch(session, STATE_IDLE)
+            return _resp("", completed=True, kind="hire", data=data)
+        # El cliente corrige: reinterpretamos su mensaje y volvemos a confirmar.
+        _store_hire_details(session, answer)
+        _ai_fill_missing(session, answer)
+        return _ask_hire_confirm(session, corregido=True)
 
     clear_session(session.whatsapp)
     return _resp("Reinicié la conversación 😊 Escribe “hola” cuando quieras.")
+
+
+def _ask_hire_confirm(session: Session, corregido: bool = False):
+    """Resumen final para que el cliente confirme antes de enviar la solicitud."""
+    d = session.data
+    _touch(session, STATE_HIRE_CONFIRM)
+    cab = ("¡Actualizado! 🙌 ¿Así está bien?" if corregido
+           else "¡Ya casi! 🙌 Revisa que esté todo bien:")
+    lineas = [
+        cab, "",
+        f"📅 Fecha: {d.get('fecha_evento') or '—'}",
+        f"📍 Lugar: {d.get('localidad') or '—'}",
+        f"🎉 Evento: {d.get('tipo_evento') or '—'}",
+        f"🕒 Hora: {d.get('horario_evento') or '—'}",
+        f"👤 A nombre de: {d.get('nombre_o_dni') or '—'}",
+        "",
+        "Responde *sí* para enviarla, o dime qué corrijo (ej: \"la hora es 8 pm\").",
+    ]
+    return _resp("\n".join(lineas))
+
+
+def _annotate_pending(session: Session) -> None:
+    """Agrega a observaciones una nota con los datos que quedaron por confirmar."""
+    pendientes = session.data.get("por_confirmar") or []
+    if not pendientes:
+        return
+    etiquetas = {"fecha_evento": "fecha", "horario_evento": "hora",
+                 "localidad": "lugar", "tipo_evento": "tipo de evento"}
+    nombres = ", ".join(etiquetas.get(f, f) for f in pendientes)
+    nota = f"⚠️ Confirmar con el cliente: {nombres}."
+    obs = str(session.data.get("observaciones", "") or "").strip()
+    session.data["observaciones"] = (obs + " " + nota).strip() if obs else nota
 
 
 _PREF_WORDS_RE = re.compile(
@@ -538,6 +645,53 @@ _PREF_WORDS_RE = re.compile(
 )
 _CONNECTORS = {"a", "al", "y", "e", "o", "de", "del", "para", "con", "por",
                "el", "la", "lo", "los", "las", "un", "una", "en"}
+_PRICE_WORDS = {
+    "precio", "precios", "cotizacion", "cotizar", "costo", "costos",
+    "tarifa", "tarifas", "presupuesto",
+}
+_IDENTITY_HINT_RE = re.compile(
+    r"\b(?:soy|me\s+llamo|mi\s+nombre\s+es|nombre\s+es|a\s+nombre\s+de)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_identity_hint(answer: str, norm: str) -> bool:
+    if _IDENTITY_HINT_RE.search(answer):
+        return True
+    return any(len(n) == 8 for n in re.findall(r"\d{7,}", norm))
+
+
+def _is_non_name_answer(answer: str) -> bool:
+    """Detecta respuestas que son intencion/objecion, no nombre ni DNI."""
+    norm = text_utils.normalize(answer)
+    if not norm or _has_identity_hint(answer, norm):
+        return False
+
+    has_price_word = any(word in norm.split() for word in _PRICE_WORDS)
+    declines_name = bool(re.search(
+        r"\b(?:no|prefiero\s+no)\s+(?:quiero|deseo|puedo|voy\s+a)?\s*"
+        r"(?:dar|dejar|decir|brindar|pasar)\s+(?:mi\s+)?(?:nombre|dni|datos)\b",
+        norm,
+    ))
+    no_reservation_yet = bool(re.search(
+        r"\b(?:no\s+quiero|sin|todavia\s+no|aun\s+no|por\s+ahora\s+no)\s+"
+        r"(?:reservar|reserva|contratar|cerrar)\b",
+        norm,
+    ))
+    starts_as_price_request = bool(re.match(
+        r"^(?:solo|solamente|primero|antes|quiero|quisiera|necesito|busco|deseo|"
+        r"me\s+gustaria|quiero\s+saber|quisiera\s+saber)\b",
+        norm,
+    ))
+    return declines_name or (has_price_word and (no_reservation_yet or starts_as_price_request))
+
+
+def _non_name_observation(answer: str) -> str:
+    norm = text_utils.normalize(answer)
+    parts = ["No brindo nombre/DNI."]
+    if any(word in norm.split() for word in _PRICE_WORDS):
+        parts.append("Busca precios/cotizacion antes de reservar.")
+    return " ".join(parts)
 
 
 def _contact_observation(answer: str, contacto: str, own_whatsapp: str) -> str:
@@ -584,6 +738,9 @@ def _parse_name_contact(answer: str, own_whatsapp: str) -> tuple[str, str, str]:
         contacto = own_whatsapp
 
     observacion = _contact_observation(answer, contacto, own_whatsapp)
+    if _is_non_name_answer(answer):
+        observacion = f"{_non_name_observation(answer)} {observacion}".strip()
+        return "", contacto, observacion
 
     # Nombre/DNI: quitar SOLO el número usado como contacto (preservando un DNI
     # distinto) y las frases de preferencia.

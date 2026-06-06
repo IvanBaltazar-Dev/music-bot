@@ -50,6 +50,8 @@ def upsert(numero_usuario: str, updates: dict) -> None:
         "admin_numero": updates.get("admin_numero", ""),
         "fecha_inicio": now,
         "fecha_ultima_interaccion": now,
+        "fecha_toma_control": updates.get("fecha_toma_control", ""),
+        "fecha_suelta_control": updates.get("fecha_suelta_control", ""),
     }
     sheets_client.append_record(SHEET_CONVERSATIONS, record)
 
@@ -59,10 +61,54 @@ def set_state(numero_usuario: str, estado: str, admin_numero: str = "") -> None:
     if estado == ADMIN_CONTROL:
         updates["admin_en_control"] = "SI"
         updates["admin_numero"] = admin_numero
+        updates["fecha_toma_control"] = sheets_client.now_iso()
     elif estado == BOT_ACTIVO:
         updates["admin_en_control"] = "NO"
         updates["admin_numero"] = ""
+        updates["fecha_suelta_control"] = sheets_client.now_iso()
     upsert(numero_usuario, updates)
+
+
+def release_control_for_admin(admin_numero: str) -> list[str]:
+    """Libera todas las conversaciones tomadas por un admin.
+
+    Devuelve los numeros de cliente liberados. Usa comparacion por digitos para
+    cubrir filas duplicadas con +51, sin +51, espacios u otros formatos.
+    """
+    admin_digits = "".join(ch for ch in str(admin_numero) if ch.isdigit())
+    if not admin_digits:
+        return []
+
+    released: list[str] = []
+    now = sheets_client.now_iso()
+    updates = {
+        "estado_conversacion": BOT_ACTIVO,
+        "admin_en_control": "NO",
+        "admin_numero": "",
+        "fecha_suelta_control": now,
+    }
+
+    for row in sheets_client.read_records(SHEET_CONVERSATIONS):
+        estado = str(row.get("estado_conversacion", "")).strip().upper()
+        row_admin = "".join(ch for ch in str(row.get("admin_numero", "")) if ch.isdigit())
+        same_admin = row_admin == admin_digits or (
+            row_admin and admin_digits and row_admin[-9:] == admin_digits[-9:]
+        )
+        if estado != ADMIN_CONTROL or not same_admin:
+            continue
+
+        client = "".join(ch for ch in str(row.get("numero_usuario", "")) if ch.isdigit())
+        key = str(row.get("id_conversacion", "")).strip()
+        ok = False
+        if key:
+            ok = sheets_client.update_record(SHEET_CONVERSATIONS, "id_conversacion", key, updates)
+        if not ok:
+            raw_number = str(row.get("numero_usuario", "")).strip()
+            ok = sheets_client.update_record(SHEET_CONVERSATIONS, "numero_usuario", raw_number, updates)
+        if ok and client:
+            released.append(client)
+
+    return released
 
 
 def get_state(numero_usuario: str) -> str:
