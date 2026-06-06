@@ -127,13 +127,16 @@ def _expire_control_for_client(client_number: str, admin_number: str, sol: dict 
         code = sol.get("codigo_solicitud", "")
         trace = f"Control de {_admin_label(admin)} vencio por inactividad"
         if code:
-            hiring_repo.update(code, {
+            ok = hiring_repo.update(code, {
                 "estado": hiring_repo.ESTADO_ABIERTA,
                 "modo_atencion": "BOT",
                 "admin_asignado": "",
                 "observaciones": _with_trace(sol, trace),
             })
-            sol = hiring_repo.get_by_code(code) or sol
+            if ok:
+                sol = hiring_repo.get_by_code(code) or sol
+            else:
+                print(f"[admin] no se pudo expirar control: code={code}")
     print(f"[admin] control_expired client={mask_identifier(client)} admin={mask_identifier(admin)}")
     return sol
 
@@ -528,11 +531,18 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     print(f"[admin] take_control code={code} admin={mask_identifier(admin)} client={mask_identifier(client)}")
     remember_last_code(admin_number, code)
 
-    hiring_repo.update(code, {
+    ok = hiring_repo.update(code, {
         "estado": hiring_repo.ESTADO_EN_CONVERSACION,
         "admin_asignado": admin,
         "modo_atencion": "ADMIN",
     })
+    if not ok:
+        await send_text_message(
+            admin_number,
+            f"⚠️ No se pudo establecer control sobre {code}. Intenta de nuevo o revisa tu conexión.",
+        )
+        return None
+
     conv_repo.set_state(client, conv_repo.ADMIN_CONTROL, admin_numero=admin)
 
     nombre_cliente = sol.get('nombre_o_dni', client) or client
@@ -629,12 +639,19 @@ async def switch_control(admin_number: str, code: str) -> str | None:
         if current_sol:
             current_code = current_sol.get("codigo_solicitud", "")
             trace = f"{_admin_label(admin)} solto control para cambiar a otra solicitud"
-            hiring_repo.update(current_code, {
+            ok = hiring_repo.update(current_code, {
                 "estado": hiring_repo.ESTADO_ABIERTA,
                 "modo_atencion": "BOT",
                 "admin_asignado": "",
                 "observaciones": _with_trace(current_sol, trace),
             })
+            if not ok:
+                await _send_admin(
+                    admin_number,
+                    f"⚠️ No se pudo liberar la solicitud anterior {current_code}. Intenta de nuevo.",
+                    codigo=code,
+                )
+                return None
 
     sol = hiring_repo.get_by_code(code)
     if not sol:
@@ -674,11 +691,18 @@ async def reply_later(admin_number: str, code: str) -> None:
     if not sol:
         await send_text_message(admin_number, f"No encontré la solicitud {code}.")
         return
-    hiring_repo.update(code, {
+    ok = hiring_repo.update(code, {
         "estado": hiring_repo.ESTADO_ABIERTA,
         "modo_atencion": "BOT",
         "admin_asignado": "",
     })
+    if not ok:
+        await _send_admin(
+            admin_number,
+            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            codigo=code,
+        )
+        return
     await _send_admin(
         admin_number,
         f"De acuerdo, dejamos la solicitud {code} pendiente.\n\n"
@@ -938,11 +962,19 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
 
     admin = _only_digits(admin_number)
     trace = f"{_admin_label(admin)} marcó la solicitud como {final_state}"
-    hiring_repo.update(code, {
+    ok = hiring_repo.update(code, {
         "estado": final_state,
         "modo_atencion": "CERRADO",
         "observaciones": _with_trace(sol, trace),
     })
+    if not ok:
+        await _send_admin(
+            admin_number,
+            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            codigo=code,
+        )
+        return None
+
     # Si el cliente estaba bajo control, devolverlo al bot.
     client = _only_digits(sol.get("numero_cliente", ""))
     if client:
@@ -973,12 +1005,19 @@ async def set_pending_by_code(admin_number: str, code: str) -> dict | None:
         return None
     admin = _only_digits(admin_number)
     trace = f"{_admin_label(admin)} marcó la solicitud como pendiente"
-    hiring_repo.update(code, {
+    ok = hiring_repo.update(code, {
         "estado": hiring_repo.ESTADO_ABIERTA,
         "modo_atencion": "BOT",
         "admin_asignado": "",
         "observaciones": _with_trace(sol, trace),
     })
+    if not ok:
+        await _send_admin(
+            admin_number,
+            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            codigo=code,
+        )
+        return None
     client = _only_digits(sol.get("numero_cliente", ""))
     if client:
         try:
@@ -1471,12 +1510,20 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
     trace = f"{_admin_label(admin)} finalizo la solicitud como {final_state}"
     if note:
         trace += f". Nota: {note[:180]}"
-    hiring_repo.update(code, {
+    ok = hiring_repo.update(code, {
         "estado": final_state,
         "modo_atencion": "CERRADO",
         "admin_asignado": admin,
         "observaciones": _with_trace(sol, trace),
     })
+    if not ok:
+        await _send_admin(
+            admin_number,
+            f"⚠️ No se pudo guardar el cambio de {code}. Intenta de nuevo o revisa tu conexión.",
+            codigo=code,
+        )
+        return None
+
     conv_repo.set_state(client, conv_repo.BOT_ACTIVO)
 
     await _send_admin(
@@ -1528,6 +1575,8 @@ async def release_control(admin_number: str) -> bool:
             })
             if ok:
                 released_sols.append(sol)
+            else:
+                print(f"[admin] no se pudo liberar solicitud en release_control: code={code}")
         except Exception as exc:  # noqa: BLE001
             print(f"[admin] error liberando solicitud actual: {exc.__class__.__name__}")
 
