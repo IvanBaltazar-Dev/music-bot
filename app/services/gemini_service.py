@@ -18,11 +18,15 @@ las nuevas (GEMINI_ENABLED/GEMINI_MODEL). Ver `config.gemini_enabled`.
 from __future__ import annotations
 
 import json
+import time
 
 from app.config import settings
+from app.security import sanitize_text
 
 _client = None
 _enabled = False
+_cooldown_until = 0.0
+_COOLDOWN_SECONDS = 300
 
 # Categorías que Gemini puede devolver (coinciden con las intenciones del bot).
 _VALID_INTENTS = {
@@ -56,10 +60,22 @@ def _init_client():
 
 def _generate(prompt: str) -> str:
     """Llama al modelo y devuelve el texto. Lanza si falla (lo maneja el caller)."""
-    response = _client.models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-    )
+    global _cooldown_until
+    try:
+        response = _client.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+        )
+    except Exception as exc:
+        detail = sanitize_text(exc, limit=300)
+        code = getattr(exc, "code", None)
+        if code == 429 or "429" in detail or "RESOURCE_EXHAUSTED" in detail:
+            _cooldown_until = time.monotonic() + _COOLDOWN_SECONDS
+            print(
+                f"[gemini] cuota/rate limit; pausa de {_COOLDOWN_SECONDS}s. "
+                f"detail={detail}"
+            )
+        raise
     return (response.text or "").strip()
 
 
@@ -67,7 +83,7 @@ _init_client()
 
 
 def is_enabled() -> bool:
-    return _enabled
+    return _enabled and time.monotonic() >= _cooldown_until
 
 
 def classify_intent(text: str) -> dict:
@@ -77,7 +93,7 @@ def classify_intent(text: str) -> dict:
     QUIERO_CONTRATAR / CONOCE_AGRUPACION / UNKNOWN). success=False si Gemini no
     está disponible o falla.
     """
-    if not _enabled or not _client:
+    if not is_enabled() or not _client:
         return {"success": False}
 
     try:
@@ -128,7 +144,7 @@ def interpret_event_fields(text: str) -> dict:
     {fecha, hora, tipo} con lo que pueda inferir (vacío si no hay).
     NO inventa: si el texto no da pistas de un campo, lo deja vacío.
     """
-    if not _enabled or not _client:
+    if not is_enabled() or not _client:
         return {}
     try:
         prompt = (
@@ -139,18 +155,83 @@ def interpret_event_fields(text: str) -> dict:
             "'fin de mes', 'Día de la Madre').\n"
             "- hora: hora aproximada ('mediodía (12 pm)', '8 pm', 'en la tarde', "
             "'al atardecer (~6 pm)').\n"
-            "- tipo: tipo de evento ('cumpleaños', 'boda', 'fiesta patronal', etc.).\n\n"
+            "- tipo: tipo de evento ('cumpleaños', 'boda', 'fiesta patronal', etc.).\n"
+            "- localidad: ciudad, distrito o localidad del evento.\n"
+            "- confidence: confianza general de 0.0 a 1.0.\n\n"
             f"Mensaje: {text}\n\n"
-            'Responde SOLO JSON sin markdown: {"fecha": "", "hora": "", "tipo": ""}'
+            'Responde SOLO JSON sin markdown: {"fecha": "", "hora": "", '
+            '"tipo": "", "localidad": "", "confidence": 0.0}'
         )
         result = json.loads(_strip_json(_generate(prompt)))
         return {
             "fecha": str(result.get("fecha", "") or "").strip(),
             "hora": str(result.get("hora", "") or "").strip(),
             "tipo": str(result.get("tipo", "") or "").strip(),
+            "localidad": str(result.get("localidad", "") or "").strip(),
+            "confidence": _confidence(result),
         }
     except Exception as exc:  # noqa: BLE001
         print(f"[gemini] error en interpret_event_fields: {exc.__class__.__name__}")
+        return {}
+
+
+def interpret_identity(text: str) -> dict:
+    """Extrae nombre/DNI y preferencia de contacto sin inventar identidad."""
+    if not is_enabled() or not _client:
+        return {}
+    try:
+        prompt = (
+            "Analiza una respuesta al pedido: '¿A nombre de quién dejamos la "
+            "solicitud?'. Extrae únicamente datos explícitos. No inventes.\n"
+            "- name_or_dni: nombre completo o DNI; elimina frases como 'a nombre "
+            "de', 'soy', 'me llamo' y 'mi nombre es'.\n"
+            "- declined: true si no desea brindar nombre/DNI.\n"
+            "- contact_phone: otro celular indicado, si existe.\n"
+            "- prefers_call: true si pide llamada.\n"
+            "- call_time: hora indicada para la llamada.\n"
+            "- confidence: confianza de 0.0 a 1.0.\n\n"
+            f"Mensaje: {text}\n\n"
+            'Responde SOLO JSON sin markdown: {"name_or_dni": "", '
+            '"declined": false, "contact_phone": "", "prefers_call": false, '
+            '"call_time": "", "confidence": 0.0}'
+        )
+        result = json.loads(_strip_json(_generate(prompt)))
+        return {
+            "name_or_dni": str(result.get("name_or_dni", "") or "").strip(),
+            "declined": bool(result.get("declined", False)),
+            "contact_phone": str(result.get("contact_phone", "") or "").strip(),
+            "prefers_call": bool(result.get("prefers_call", False)),
+            "call_time": str(result.get("call_time", "") or "").strip(),
+            "confidence": _confidence(result),
+        }
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemini] error en interpret_identity: {exc.__class__.__name__}")
+        return {}
+
+
+def interpret_hiring_action(text: str) -> dict:
+    """Clasifica una respuesta ambigua durante la revisión final."""
+    if not is_enabled() or not _client:
+        return {}
+    try:
+        prompt = (
+            "Clasifica el mensaje de un cliente que está revisando una solicitud "
+            "de contratación musical. No respondas ni inventes datos.\n"
+            "- CONFIRM: quiere enviar o confirmar la solicitud.\n"
+            "- CORRECT: quiere cambiar algún dato.\n"
+            "- CANCEL: quiere cancelar o borrar la solicitud.\n"
+            "- UNKNOWN: no está claro.\n\n"
+            f"Mensaje: {text}\n\n"
+            'Responde SOLO JSON sin markdown: {"action": "CONFIRM|CORRECT|'
+            'CANCEL|UNKNOWN", "confidence": 0.0}'
+        )
+        result = json.loads(_strip_json(_generate(prompt)))
+        action = str(result.get("action", "UNKNOWN") or "UNKNOWN").upper()
+        if action not in {"CONFIRM", "CORRECT", "CANCEL", "UNKNOWN"}:
+            action = "UNKNOWN"
+        return {"action": action, "confidence": _confidence(result)}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gemini] error en interpret_hiring_action: {exc.__class__.__name__}")
         return {}
 
 
@@ -165,7 +246,7 @@ _VALID_ADMIN_ACTIONS = {
 def classify_admin_request(text: str) -> dict:
     """Asistente para administradores: clasifica un pedido en lenguaje natural
     en una acción del panel. Devuelve {success, action, confidence}."""
-    if not _enabled or not _client:
+    if not is_enabled() or not _client:
         return {"success": False}
     try:
         prompt = (
@@ -197,7 +278,7 @@ def classify_admin_request(text: str) -> dict:
 
 def summarize_admin_context(client_name: str, request_data: dict, transcript: str) -> str | None:
     """Resume para un admin donde quedo una conversacion con un cliente."""
-    if not _enabled or not _client or not transcript:
+    if not is_enabled() or not _client or not transcript:
         return None
     try:
         prompt = (
@@ -236,3 +317,11 @@ def _strip_json(text: str) -> str:
         if t.lower().startswith("json"):
             t = t[4:]
     return t.strip()
+
+
+def _confidence(result: dict) -> float:
+    try:
+        value = float(result.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        value = 0.0
+    return min(1.0, max(0.0, value))

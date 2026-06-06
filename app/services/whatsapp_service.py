@@ -10,6 +10,7 @@ import contextvars
 import httpx
 
 from app.config import settings
+from app.security import mask_identifier, sanitize_text
 
 # Número (phone_number_id) que RECIBIÓ el mensaje en curso. El webhook lo fija
 # por cada request para que el bot responda DESDE ese mismo número y no desde uno
@@ -64,9 +65,24 @@ async def _post(payload: dict):
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(_base_url(), headers=_headers(), json=payload)
         if response.status_code >= 400:
-            print(f"[whatsapp] error status={response.status_code}")
+            recipient = mask_identifier(payload.get("to", ""))
+            detail = sanitize_text(response.text, limit=400)
+            print(
+                f"[whatsapp] send_failed status={response.status_code} "
+                f"to={recipient} type={payload.get('type', '')} detail={detail}"
+            )
             return None
-        return response.json()
+        result = response.json()
+        message_id = ""
+        if isinstance(result, dict):
+            messages = result.get("messages") or []
+            if messages and isinstance(messages[0], dict):
+                message_id = mask_identifier(messages[0].get("id", ""), visible=8)
+        print(
+            f"[whatsapp] send_ok to={mask_identifier(payload.get('to', ''))} "
+            f"type={payload.get('type', '')} message={message_id or '-'}"
+        )
+        return result
     except Exception as exc:  # noqa: BLE001 - el webhook no debe caerse por la red
         print(f"[whatsapp] fallo de red: {exc.__class__.__name__}")
         return None
@@ -83,6 +99,34 @@ async def send_text_message(to: str, message: str):
         "to": _normalize_recipient(to),
         "type": "text",
         "text": {"body": message},
+    }
+    return await _post(payload)
+
+
+async def send_template_message(
+    to: str,
+    template_name: str,
+    parameters: list[str],
+    language: str = "es_PE",
+):
+    """Envía una plantilla aprobada por Meta con variables de cuerpo."""
+    if not template_name:
+        return None
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": _normalize_recipient(to),
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language or "es_PE"},
+            "components": [{
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": str(value or "-")[:1000]}
+                    for value in parameters
+                ],
+            }],
+        },
     }
     return await _post(payload)
 

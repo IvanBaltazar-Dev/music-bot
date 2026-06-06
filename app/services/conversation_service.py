@@ -441,7 +441,17 @@ async def _finalize_flow(to: str, resp: dict):
             paso="completado", ciudad=data.get("localidad", ""), codigo_solicitud=code,
         )
         try:
-            await admin_service.notify_new_request(sol)
+            report = await admin_service.notify_new_request(sol)
+            if report.get("delivered", 0) == 0:
+                await error_service.log_error(
+                    "admin_service.notify_new_request",
+                    RuntimeError(
+                        "No se entregó la notificación a ningún administrador"
+                    ),
+                    numero_usuario=to,
+                    mensaje_usuario=code,
+                    notify=False,
+                )
         except Exception as exc:  # noqa: BLE001
             print(f"[conversation] no se pudo notificar la solicitud: {exc.__class__.__name__}")
         conv_repo.set_state(to, conv_repo.ESPERANDO_RESPUESTA)
@@ -911,22 +921,33 @@ async def handle_incoming_message(
 
 
 async def _route(from_number: str, text: str, button_id: str, profile_name: str, raw_json: str):
-    # 0) Registrar mensaje entrante + asegurar registro de Conversación
+    # 0) Asegurar conversación y sincronizar el flujo antes de clasificar.
     is_admin = admin_service.is_admin(from_number)
-    incoming_intent = _detect_incoming_intent(text, button_id, is_admin)
-    _log_msg(
-        from_number, msg_repo.ENTRANTE, text or "",
-        tipo="interactive" if button_id else "text",
-        payload_boton=button_id, intencion=incoming_intent, raw=raw_json,
-    )
     try:
         conv_repo.upsert(from_number, {})  # crea/actualiza la fila de Conversaciones
     except Exception:  # noqa: BLE001
         pass
 
-    # Sincroniza el paso persistido antes de enrutar. Esto evita que un worker
-    # con memoria antigua trate una respuesta de contratación como otra intención.
-    session_service.refresh_session(from_number)
+    session = session_service.refresh_session(from_number)
+    if (
+        not is_admin
+        and not button_id
+        and session is not None
+        and session.in_flow()
+    ):
+        incoming_intent = (
+            intent_service.INTENT_CANCEL
+            if intent_service.is_cancel_request(text)
+            else f"FLOW_INPUT:{session.state}"
+        )
+    else:
+        incoming_intent = _detect_incoming_intent(text, button_id, is_admin)
+
+    _log_msg(
+        from_number, msg_repo.ENTRANTE, text or "",
+        tipo="interactive" if button_id else "text",
+        payload_boton=button_id, intencion=incoming_intent, raw=raw_json,
+    )
 
     # 1) Administrador: nunca debe caer al flujo de cliente.
     if is_admin:
@@ -1006,7 +1027,7 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
         return
 
     # 3) Cancelar / reiniciar en cualquier momento
-    if text and not button_id and intent_service.detect_intent(text) == intent_service.INTENT_CANCEL:
+    if text and not button_id and incoming_intent == intent_service.INTENT_CANCEL:
         session_service.clear_session(from_number)
         conv_repo.set_state(from_number, conv_repo.BOT_ACTIVO)
         await _send_text(from_number, "Listo, volvemos a empezar 😊 ¿Qué te gustaría hacer?")
@@ -1020,7 +1041,7 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
             await _notify_followers_if_any(from_number, text or button_id)
             return
 
-    session = session_service.get_session(from_number)
+    session = session or session_service.get_session(from_number)
 
     # 5) Flujo "Quiero ir a verlos" (entrada de ciudad por texto)
     if session.state in SEE_STATES:
@@ -1045,7 +1066,7 @@ async def _route(from_number: str, text: str, button_id: str, profile_name: str,
             return
 
     # 8) Intención pública
-    await _dispatch_intent(from_number, intent_service.detect_intent(text), profile_name, text)
+    await _dispatch_intent(from_number, incoming_intent, profile_name, text)
     await _notify_followers_if_any(from_number, text)
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from app.config import settings
 from app.models.session import (
     Session,
     STATE_IDLE,
@@ -538,8 +539,16 @@ def _ai_fill_missing(session: Session, answer: str) -> None:
     ai = gemini_service.interpret_event_fields(answer)
     if not ai:
         return
+    confidence = float(ai.get("confidence", 0.75) or 0.0)
+    if confidence < settings.AI_FLOW_MIN_CONFIDENCE:
+        return
     pendientes = session.data.setdefault("por_confirmar", [])
-    mapping = {"fecha_evento": "fecha", "horario_evento": "hora", "tipo_evento": "tipo"}
+    mapping = {
+        "fecha_evento": "fecha",
+        "horario_evento": "hora",
+        "tipo_evento": "tipo",
+        "localidad": "localidad",
+    }
     for field, ai_key in mapping.items():
         if field in faltan and ai.get(ai_key):
             session.data[field] = ai[ai_key]
@@ -670,11 +679,40 @@ def _advance_hire(session: Session, answer: str):
         if _is_hire_confirmation(norm):
             _annotate_pending(session)
             data = dict(session.data)
-            _touch(session, STATE_IDLE)
             return _resp("", completed=True, kind="hire", data=data)
+        if _is_hire_cancel(norm):
+            clear_session(session.whatsapp)
+            return _resp(
+                "Listo, descarté esta solicitud. Cuando quieras podemos empezar "
+                "una nueva.",
+                cancelled=True,
+            )
         # El cliente corrige: actualizamos solo los campos que menciona.
         corrected_fields = _apply_hire_correction(session, answer)
         if not corrected_fields:
+            ai_action = gemini_service.interpret_hiring_action(answer)
+            confidence = float(ai_action.get("confidence", 0.0) or 0.0)
+            if (
+                confidence >= settings.AI_FLOW_MIN_CONFIDENCE
+                and ai_action.get("action") == "CONFIRM"
+            ):
+                _annotate_pending(session)
+                return _resp(
+                    "",
+                    completed=True,
+                    kind="hire",
+                    data=dict(session.data),
+                )
+            if (
+                confidence >= settings.AI_FLOW_MIN_CONFIDENCE
+                and ai_action.get("action") == "CANCEL"
+            ):
+                clear_session(session.whatsapp)
+                return _resp(
+                    "Listo, descarté esta solicitud. Cuando quieras podemos "
+                    "empezar una nueva.",
+                    cancelled=True,
+                )
             _persist(session)
             return _resp(
                 "No identifiqué qué dato deseas corregir. Puedes escribir, por "
@@ -728,6 +766,19 @@ def _is_hire_confirmation(norm: str) -> bool:
     return bool(re.fullmatch(
         r"(?:si|claro|ok|okay|dale|confirmo|confirmar|ya)"
         r"(?:\s+(?:esta\s+bien|todo\s+bien|correcto|confirmado))?",
+        norm,
+    )) or bool(re.search(
+        r"\b(?:quiero|deseo|puedes?|vamos\s+a)?\s*"
+        r"(?:enviar|mandar|confirmar|registrar)\s+(?:ya\s+)?"
+        r"(?:mi|la|esta)?\s*solicitud\b",
+        norm,
+    ))
+
+
+def _is_hire_cancel(norm: str) -> bool:
+    return bool(re.search(
+        r"\b(?:borra|borrar|elimina|eliminar|descarta|descartar|cancela|"
+        r"cancelar)\s+(?:todo|la\s+solicitud|esta\s+solicitud)?\b",
         norm,
     ))
 
@@ -894,6 +945,39 @@ def _contact_observation(answer: str, contacto: str, own_whatsapp: str) -> str:
     return " ".join(parts)
 
 
+def _strip_identity_phrase(answer: str) -> str:
+    value = (answer or "").strip()
+    patterns = (
+        r"(?i)^\s*(?:(?:deja|dejalo|dejar|pon|ponlo|poner|registra|"
+        r"registralo|registrar|anota|anotalo|anotar)\s+)?"
+        r"(?:la\s+solicitud\s+)?a\s+nombre\s+de\s+",
+        r"(?i)^\s*(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+",
+    )
+    for pattern in patterns:
+        value = re.sub(pattern, "", value).strip()
+    return value
+
+
+def _name_candidate_needs_ai(answer: str, candidate: str) -> bool:
+    norm_answer = text_utils.normalize(answer)
+    norm_candidate = text_utils.normalize(candidate)
+    if not candidate:
+        return True
+    suspicious = {
+        "nombre", "solicitud", "poner", "ponlo", "registrar", "dejar",
+        "figurar", "figure", "quede", "llamo",
+    }
+    if set(norm_candidate.split()) & suspicious:
+        return True
+    return (
+        len(norm_candidate.split()) > 6
+        or (
+            norm_candidate == norm_answer
+            and bool(set(norm_answer.split()) & suspicious)
+        )
+    )
+
+
 def _parse_name_contact(answer: str, own_whatsapp: str) -> tuple[str, str, str]:
     """Devuelve (nombre_o_dni, numero_contacto, observaciones).
 
@@ -924,7 +1008,7 @@ def _parse_name_contact(answer: str, own_whatsapp: str) -> tuple[str, str, str]:
 
     # Nombre/DNI: quitar SOLO el número usado como contacto (preservando un DNI
     # distinto) y las frases de preferencia.
-    nombre = answer
+    nombre = _strip_identity_phrase(answer)
     if contacto and contacto != own_whatsapp:
         nombre = re.sub(re.escape(contacto), " ", nombre)
     for pattern in _TIME_PATTERNS:
@@ -939,6 +1023,27 @@ def _parse_name_contact(answer: str, own_whatsapp: str) -> tuple[str, str, str]:
     nombre = " ".join(tokens).strip(" ,.-")
     if not nombre:
         nombre = answer.strip()
+
+    if _name_candidate_needs_ai(answer, nombre):
+        ai = gemini_service.interpret_identity(answer)
+        confidence = float(ai.get("confidence", 0.0) or 0.0)
+        if confidence >= settings.AI_FLOW_MIN_CONFIDENCE:
+            if ai.get("declined"):
+                observacion = (
+                    f"{_non_name_observation(answer)} {observacion}"
+                ).strip()
+                return "", contacto, observacion
+            ai_name = str(ai.get("name_or_dni", "") or "").strip()
+            if ai_name:
+                nombre = ai_name
+            ai_contact = "".join(
+                ch for ch in str(ai.get("contact_phone", "")) if ch.isdigit()
+            )
+            if len(ai_contact) == 9:
+                contacto = ai_contact
+                observacion = _contact_observation(
+                    answer, contacto, own_whatsapp
+                )
     return nombre, contacto, observacion
 
 

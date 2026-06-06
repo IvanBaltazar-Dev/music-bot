@@ -29,6 +29,7 @@ from app.services.whatsapp_service import (
     send_text_message,
     send_button_message,
     send_list_message,
+    send_template_message,
 )
 
 
@@ -243,9 +244,9 @@ def is_admin(whatsapp_number: str) -> bool:
 # ---------------------------------------------------------------------------
 async def _send_admin(numero: str, texto: str, buttons=None, codigo: str = ""):
     if buttons:
-        await send_button_message(numero, texto, buttons)
+        result = await send_button_message(numero, texto, buttons)
     else:
-        await send_text_message(numero, texto)
+        result = await send_text_message(numero, texto)
     try:
         msg_repo.save({
             "numero_usuario": numero,
@@ -257,6 +258,7 @@ async def _send_admin(numero: str, texto: str, buttons=None, codigo: str = ""):
         })
     except Exception:  # noqa: BLE001
         pass
+    return result is not None
 
 
 async def _send_admin_list(numero: str, texto: str, options: list[dict],
@@ -357,17 +359,58 @@ def _action_buttons(code: str) -> list[dict]:
     ]
 
 
-async def notify_new_request(sol: dict) -> None:
+async def notify_new_request(sol: dict) -> dict:
     """Notifica a todos los administradores de una nueva solicitud abierta."""
     admins = admin_numbers()
     if not admins:
         print("[admin] no hay administradores configurados para notificar.")
-        return
+        return {"configured": 0, "delivered": 0, "failed": 0}
     texto = _request_summary(sol)
     code = sol.get("codigo_solicitud", "")
     buttons = _action_buttons(code)
+    delivered = 0
+    failed = 0
+    print(f"[admin] notification_start code={code or '-'} admins={len(admins)}")
     for numero in admins:
-        await _send_admin(numero, texto, buttons=buttons, codigo=code)
+        ok = False
+        try:
+            ok = await _send_admin(numero, texto, buttons=buttons, codigo=code)
+            if not ok and settings.ADMIN_NOTIFICATION_TEMPLATE_NAME:
+                template_result = await send_template_message(
+                    numero,
+                    settings.ADMIN_NOTIFICATION_TEMPLATE_NAME,
+                    [
+                        code or "-",
+                        _client_label(sol),
+                        sol.get("fecha_evento", "-"),
+                        sol.get("localidad", "-"),
+                        sol.get("tipo_evento", "-"),
+                    ],
+                    language=settings.ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE,
+                )
+                ok = template_result is not None
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[admin] notification_exception code={code or '-'} "
+                f"admin={mask_identifier(numero)} error={exc.__class__.__name__}"
+            )
+        if ok:
+            delivered += 1
+            print(
+                f"[admin] notification_delivered code={code or '-'} "
+                f"admin={mask_identifier(numero)}"
+            )
+        else:
+            failed += 1
+            print(
+                f"[admin] notification_failed code={code or '-'} "
+                f"admin={mask_identifier(numero)}"
+            )
+    return {
+        "configured": len(admins),
+        "delivered": delivered,
+        "failed": failed,
+    }
 
 
 async def notify_request_update(sol: dict, texto_cliente: str) -> None:

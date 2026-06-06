@@ -40,12 +40,17 @@ class Settings(BaseSettings):
     AI_ENABLED: bool = False
     GEMINI_API_KEY: str = ""
     AI_PROVIDER: str = "gemini"
-    AI_MODEL: str = "gemini-2.5-flash"
+    AI_MODEL: str = "gemini-2.5-flash-lite"
 
     # Variables nuevas (opcionales, con default seguro). Sirven de alias claros
     # para Gemini sin romper la configuración previa. No es obligatorio definirlas.
     GEMINI_ENABLED: bool = False
     GEMINI_MODEL: str = ""
+    AI_FLOW_MIN_CONFIDENCE: float = 0.40
+
+    # Plantilla aprobada por Meta para avisar fuera de la ventana de 24 horas.
+    ADMIN_NOTIFICATION_TEMPLATE_NAME: str = ""
+    ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE: str = "es_PE"
 
     # Si un admin toma control y no cierra/suelta, el caso vuelve a cola tras
     # este tiempo para que el cliente no quede bloqueado indefinidamente.
@@ -75,7 +80,9 @@ class Settings(BaseSettings):
     @property
     def gemini_model(self) -> str:
         """Modelo de Gemini: GEMINI_MODEL si se definió, si no AI_MODEL."""
-        return (self.GEMINI_MODEL or self.AI_MODEL or "gemini-1.5-flash").strip()
+        return (
+            self.GEMINI_MODEL or self.AI_MODEL or "gemini-2.5-flash-lite"
+        ).strip()
 
     @property
     def storage_backend(self) -> str:

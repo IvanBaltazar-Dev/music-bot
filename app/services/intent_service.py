@@ -313,6 +313,11 @@ def detect_intent(text: str) -> str:
     return rule_intent or INTENT_UNKNOWN
 
 
+def is_cancel_request(text: str) -> bool:
+    """Detecta cancelación solo con reglas, sin consumir una llamada de IA."""
+    return _matches(normalize(text), _KEYWORDS[INTENT_CANCEL])
+
+
 def button_to_intent(button_id: str):
     """Mapea el id de un botón de flujo principal a una intención pública."""
     return _BUTTON_INTENT.get(button_id)

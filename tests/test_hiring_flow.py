@@ -127,6 +127,81 @@ class HiringFlowTest(unittest.TestCase):
 
         self.assertTrue(response["completed"])
         self.assertEqual(response["kind"], "hire")
+        self.assertEqual(session.state, STATE_HIRE_CONFIRM)
+
+    def test_confirmation_accepts_send_request_phrase(self):
+        session = Session(
+            whatsapp="51999999999",
+            state=STATE_HIRE_CONFIRM,
+            data={
+                "fecha_evento": "15/10",
+                "localidad": "Lima",
+                "tipo_evento": "cumpleaños",
+                "horario_evento": "8 pm",
+                "nombre_o_dni": "Pedro Infante",
+            },
+        )
+
+        with patch.object(session_service, "_persist"):
+            response = session_service.handle_flow(
+                session, "Quiero enviar mi solicitud"
+            )
+
+        self.assertTrue(response["completed"])
+        self.assertEqual(response["data"]["nombre_o_dni"], "Pedro Infante")
+
+    def test_confirmation_uses_ai_for_ambiguous_send_phrase(self):
+        session = Session(
+            whatsapp="51999999999",
+            state=STATE_HIRE_CONFIRM,
+            data={
+                "fecha_evento": "15/10",
+                "localidad": "Lima",
+                "tipo_evento": "cumpleaños",
+                "horario_evento": "8 pm",
+            },
+        )
+
+        with (
+            patch.object(session_service, "_persist"),
+            patch.object(
+                session_service.gemini_service,
+                "interpret_hiring_action",
+                return_value={"action": "CONFIRM", "confidence": 0.40},
+            ),
+        ):
+            response = session_service.handle_flow(
+                session, "Procede con lo que ya te pasé"
+            )
+
+        self.assertTrue(response["completed"])
+
+    def test_name_phrase_is_cleaned(self):
+        nombre, contacto, _ = session_service._parse_name_contact(
+            "A nombre de Pedro Infante",
+            "51934011041",
+        )
+
+        self.assertEqual(nombre, "Pedro Infante")
+        self.assertEqual(contacto, "51934011041")
+
+    def test_identity_uses_ai_when_rules_remain_ambiguous(self):
+        with patch.object(
+            session_service.gemini_service,
+            "interpret_identity",
+            return_value={
+                "name_or_dni": "Pedro Infante",
+                "declined": False,
+                "contact_phone": "",
+                "confidence": 0.40,
+            },
+        ):
+            nombre, _, _ = session_service._parse_name_contact(
+                "Quiero que la solicitud figure con Pedro Infante",
+                "51934011041",
+            )
+
+        self.assertEqual(nombre, "Pedro Infante")
 
     def test_step3_does_not_store_ack_as_name(self):
         session = Session(

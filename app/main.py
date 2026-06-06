@@ -17,6 +17,8 @@ def _on_startup():
         from app.repositories.sheets_client import ensure_sheets
         resumen = ensure_sheets()
         print(f"[startup] hojas: {resumen}")
+        from app.services import admin_service
+        print(f"[startup] administradores_activos={len(admin_service.admin_numbers())}")
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] no se pudieron inicializar hojas: {exc.__class__.__name__}")
 
