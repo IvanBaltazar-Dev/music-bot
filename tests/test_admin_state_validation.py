@@ -57,7 +57,9 @@ async def test_apply_state_by_code_succeeds_with_valid_update():
         "observaciones": "test",
     }
 
-    with patch('app.services.admin_service.hiring_repo.get_by_code', return_value=sol):
+    # get_by_code se llama dos veces: lectura inicial y re-lectura de verificación.
+    closed = {**sol, "estado": hiring_repo.ESTADO_CERRADA}
+    with patch('app.services.admin_service.hiring_repo.get_by_code', side_effect=[sol, closed]):
         with patch('app.services.admin_service.hiring_repo.update', return_value=True):
             with patch('app.services.admin_service.conv_repo.set_state'):
                 with patch('app.services.admin_service._send_admin') as mock_send_admin:
@@ -70,6 +72,35 @@ async def test_apply_state_by_code_succeeds_with_valid_update():
 
                     # Debe notificar el éxito (verificable con call count)
                     assert mock_send_admin.called
+
+
+@pytest.mark.asyncio
+async def test_apply_state_by_code_rejects_when_not_persisted():
+    """Si update() devuelve True pero la re-lectura muestra que el estado NO
+    persistió, NO debe responder '✅ cerrada' ni retornar éxito."""
+    admin_number = "5519999999999"
+    code = "SOL-0001"
+    sol = {
+        "codigo_solicitud": code,
+        "estado": hiring_repo.ESTADO_EN_CONVERSACION,
+        "numero_cliente": "5511888888888",
+        "nombre_o_dni": "Test Client",
+        "observaciones": "test",
+    }
+    # La re-lectura devuelve la solicitud TODAVÍA pendiente (no persistió).
+    still_open = {**sol, "estado": hiring_repo.ESTADO_ABIERTA}
+
+    with patch('app.services.admin_service.hiring_repo.get_by_code', side_effect=[sol, still_open]):
+        with patch('app.services.admin_service.hiring_repo.update', return_value=True):
+            with patch('app.services.admin_service.conv_repo.set_state'):
+                with patch('app.services.admin_service._send_admin') as mock_send_admin:
+                    result = await admin_service.apply_state_by_code(admin_number, "close", code)
+
+    assert result is None
+    # Debe avisar que no pudo confirmar (no un falso "✅ cerrada").
+    mensaje = mock_send_admin.call_args[0][1]
+    assert "⚠️" in mensaje
+    assert "✅" not in mensaje
 
 
 @pytest.mark.asyncio

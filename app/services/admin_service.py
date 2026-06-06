@@ -883,6 +883,30 @@ async def send_requests_list(admin_number: str) -> None:
 
     activas = [r for r in todas if _is_activa(r)]
     finalizadas = [r for r in todas if not _is_activa(r)]
+
+    # Sin pendientes: mensaje claro. Igual ofrecemos las finalizadas recientes
+    # (no son "pendientes") por si el admin quiere revisarlas o reabrirlas.
+    if not activas:
+        print(f"[admin] requests_list sin pendientes (finalizadas={len(finalizadas)})")
+        recientes = finalizadas[:_MAX_LIST_ROWS]
+        if recientes:
+            options = [{
+                "id": intent_service.view_id(r.get("codigo_solicitud", "-")),
+                "title": f"{r.get('codigo_solicitud', '-')} · "
+                         f"{r.get('nombre_o_dni') or r.get('numero_cliente', '-')}"[:24],
+                "description": _estado_label(str(r.get("estado", "-")).strip().upper()),
+            } for r in recientes]
+            await _send_admin_list(
+                admin_number,
+                "No tienes solicitudes pendientes por atender.\n\n"
+                "Solicitudes finalizadas recientes:",
+                options,
+                button_text="Ver finalizadas",
+            )
+        else:
+            await _send_admin(admin_number, "No tienes solicitudes pendientes por atender.")
+        return
+
     # Primero lo accionable (pendientes/activas), luego las finalizadas recientes.
     ordenadas = activas + finalizadas
     mostrar = ordenadas[:_MAX_LIST_ROWS]
@@ -953,13 +977,26 @@ async def confirm_action(admin_number: str, action: str, code: str) -> None:
     )
 
 
+# Gerundio por acción para logs legibles (cerrando / cotizando / descartando).
+_ACTION_GERUND = {"close": "cerrando", "quote": "cotizando", "discard": "descartando"}
+
+
 async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict | None:
-    """Aplica un cambio de estado terminal a una solicitud por su código."""
+    """Aplica un cambio de estado terminal a una solicitud por su código.
+
+    Garantías:
+    * Busca por código (SOL-XXXX), nunca por id numérico.
+    * Re-lee desde el store después del UPDATE: solo confirma "✅" si el estado
+      quedó realmente persistido (no responde en falso si afectó 0 filas).
+    """
     final_state = _ACTION_STATE.get(action)
     if not final_state:
         return None
+
+    print(f"[admin] {_ACTION_GERUND.get(action, 'finalizando')} solicitud {code}")
     sol = hiring_repo.get_by_code(code)
     if not sol:
+        print(f"[admin] no se pudo cerrar solicitud {code} porque no se encontró")
         await send_text_message(admin_number, f"No encontré la solicitud {code}.")
         return None
 
@@ -968,17 +1005,35 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
     # Al finalizar (cerrar/cotizar/descartar) la conversación vuelve al bot.
     # El estado terminal queda registrado en `estado`; modo_atencion solo admite
     # BOT/ADMIN en la BD (un valor inválido rechaza TODA la actualización).
+    # `admin_asignado` deja constancia del responsable del cierre.
     ok = hiring_repo.update(code, {
         "estado": final_state,
         "modo_atencion": "BOT",
+        "admin_asignado": admin,
         "observaciones": _with_trace(sol, trace),
     })
+    print(f"[admin] update cierre solicitud afectó {1 if ok else 0} filas")
     if not ok:
+        print(f"[admin] no se pudo cerrar solicitud {code} porque el UPDATE no afectó filas")
         await _send_admin(
             admin_number,
             f"⚠️ Error de conexión: no se pudo guardar el cambio de {code}.\n\n"
             f"Sigue {_estado_label(final_state)} en el sistema. Intenta de nuevo en un momento. "
             f"Si sigue fallando, escribe *#salir* para intentar liberar la conversación.",
+            codigo=code,
+        )
+        return None
+
+    # Re-leer desde el store (Supabase) para confirmar que el estado persistió.
+    refreshed = hiring_repo.get_by_code(code)
+    persisted = bool(refreshed) and str(refreshed.get("estado", "")).strip().upper() == final_state
+    if not persisted:
+        estado_real = str((refreshed or {}).get("estado", "?")).strip().upper() or "?"
+        print(f"[admin] no se pudo cerrar solicitud {code}: el estado no persistió (sigue {estado_real})")
+        await _send_admin(
+            admin_number,
+            f"⚠️ No pude confirmar el cierre de {code} (sigue como {_estado_label(estado_real)}).\n\n"
+            "Intenta de nuevo en un momento.",
             codigo=code,
         )
         return None
@@ -1001,7 +1056,7 @@ async def apply_state_by_code(admin_number: str, action: str, code: str) -> dict
         mensajes_ok.get(final_state, f"✅ {code} quedó en {_estado_label(final_state)}."),
         codigo=code,
     )
-    print(f"[admin] state_by_code code={code} state={final_state} admin={mask_identifier(admin)}")
+    print(f"[admin] solicitud {code} cerrada correctamente (estado={final_state} admin={mask_identifier(admin)})")
     return {"codigo_solicitud": code, "estado": final_state, "numero_cliente": client}
 
 
@@ -1516,6 +1571,7 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
     }:
         final_state = hiring_repo.ESTADO_CERRADA
 
+    print(f"[admin] cerrando solicitud {code}")
     trace = f"{_admin_label(admin)} finalizo la solicitud como {final_state}"
     if note:
         trace += f". Nota: {note[:180]}"
@@ -1527,11 +1583,26 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
         "admin_asignado": admin,
         "observaciones": _with_trace(sol, trace),
     })
+    print(f"[admin] update cierre solicitud afectó {1 if ok else 0} filas")
     if not ok:
+        print(f"[admin] no se pudo cerrar solicitud {code} porque el UPDATE no afectó filas")
         await _send_admin(
             admin_number,
             f"⚠️ Error de conexión: no se pudo cerrar {code}.\n\n"
             f"Intenta de nuevo en un momento. Si sigue fallando, escribe *#salir* para liberar la conversación.",
+            codigo=code,
+        )
+        return None
+
+    # Re-leer desde el store para confirmar que el cierre persistió de verdad.
+    refreshed = hiring_repo.get_by_code(code)
+    if not (refreshed and str(refreshed.get("estado", "")).strip().upper() == final_state):
+        estado_real = str((refreshed or {}).get("estado", "?")).strip().upper() or "?"
+        print(f"[admin] no se pudo cerrar solicitud {code}: el estado no persistió (sigue {estado_real})")
+        await _send_admin(
+            admin_number,
+            f"⚠️ No pude confirmar el cierre de {code} (sigue como {_estado_label(estado_real)}). "
+            "Intenta de nuevo en un momento.",
             codigo=code,
         )
         return None
@@ -1545,8 +1616,8 @@ async def close_current_request(admin_number: str, final_state: str, note: str =
         codigo=code,
     )
     print(
-        f"[admin] request_closed code={code} state={final_state} "
-        f"admin={mask_identifier(admin)} client={mask_identifier(client)}"
+        f"[admin] solicitud {code} cerrada correctamente (estado={final_state} "
+        f"admin={mask_identifier(admin)} client={mask_identifier(client)})"
     )
     return {"codigo_solicitud": code, "estado": final_state, "numero_cliente": client}
 

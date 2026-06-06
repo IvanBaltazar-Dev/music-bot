@@ -60,7 +60,9 @@ async def test_apply_state_by_code_uses_valid_attention_mode(action, expected_st
         captured["payload"] = updates
         return True
 
-    with patch.object(admin_service.hiring_repo, "get_by_code", return_value=sol):
+    # get_by_code: lectura inicial (sol) y re-lectura de verificación (ya en estado final).
+    closed = {**sol, "estado": expected_state}
+    with patch.object(admin_service.hiring_repo, "get_by_code", side_effect=[sol, closed]):
         with patch.object(admin_service.hiring_repo, "update", side_effect=fake_update):
             with patch.object(admin_service.conv_repo, "set_state"):
                 with patch.object(admin_service, "_send_admin"):
@@ -93,15 +95,18 @@ async def test_close_current_request_uses_valid_attention_mode():
         captured["payload"] = updates
         return True
 
+    closed = {**sol, "estado": hiring_repo.ESTADO_CERRADA}
     with patch.object(admin_service, "controlling_client_of", return_value=client):
         with patch.object(admin_service.hiring_repo, "get_active_by_client", return_value=sol):
             with patch.object(admin_service.hiring_repo, "get_by_client", return_value=sol):
-                with patch.object(admin_service.hiring_repo, "update", side_effect=fake_update):
-                    with patch.object(admin_service.conv_repo, "set_state"):
-                        with patch.object(admin_service, "_send_admin"):
-                            result = await admin_service.close_current_request(
-                                "51900000000", hiring_repo.ESTADO_CERRADA
-                            )
+                # Re-lectura de verificación tras el cierre.
+                with patch.object(admin_service.hiring_repo, "get_by_code", return_value=closed):
+                    with patch.object(admin_service.hiring_repo, "update", side_effect=fake_update):
+                        with patch.object(admin_service.conv_repo, "set_state"):
+                            with patch.object(admin_service, "_send_admin"):
+                                result = await admin_service.close_current_request(
+                                    "51900000000", hiring_repo.ESTADO_CERRADA
+                                )
 
     assert captured.get("payload"), "no se llamó a hiring_repo.update"
     _assert_payload_valid(captured["payload"])
