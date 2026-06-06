@@ -418,7 +418,7 @@ async def _finalize_flow(to: str, resp: dict):
                 "ultimo_mensaje_cliente": data.get("ultimo_mensaje_cliente", ""),
                 "observaciones": data.get("observaciones", existing.get("observaciones", "")),
             }
-            hiring_repo.update(code, updates)
+            ok = hiring_repo.update(code, updates)
             refreshed = hiring_repo.get_by_code(code) or existing
             await _send_text(
                 to,
@@ -426,10 +426,13 @@ async def _finalize_flow(to: str, resp: dict):
                 "mensaje para que el manager lo revise.",
                 flujo="contratar",
             )
-            await admin_service.notify_request_update(
-                refreshed,
-                data.get("ultimo_mensaje_cliente", ""),
-            )
+            try:
+                await admin_service.notify_request_update(
+                    refreshed,
+                    data.get("ultimo_mensaje_cliente", ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[conversation] error notificando actualizacion: {exc.__class__.__name__}")
             session_service.clear_session(to)
             return
 
@@ -803,7 +806,9 @@ async def _handle_existing_hire_request(to: str, text: str) -> bool:
     code = sol.get("codigo_solicitud", "")
     if code:
         hiring_repo.update(code, {"ultimo_mensaje_cliente": text})
-        sol = hiring_repo.get_by_code(code) or sol
+        refreshed = hiring_repo.get_by_code(code)
+        if refreshed:
+            sol = refreshed
 
     last_admin = msg_repo.last_admin_for_client(to)
     if last_admin:
