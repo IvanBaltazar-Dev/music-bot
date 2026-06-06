@@ -43,11 +43,9 @@ def crear_solicitud(numero_cliente: str, datos: dict) -> tuple[str, dict]:
 
 def texto_cierre_cliente(nombre: str) -> str:
     """Mensaje de cierre para el cliente (sin mostrar el código interno)."""
-    saludo = f"¡Listo, {nombre}! 🙌🎶" if nombre else "¡Listo! 🙌🎶"
+    saludo = f"¡Listo, {nombre}!" if nombre else "¡Listo!"
     return (
-        f"{saludo}\n\n"
-        "Ya dejé tu solicitud bien encargada. Ahora vamos a despertar a nuestro "
-        "manager 😄🎶\n\n"
-        "Te responderán por este mismo chat para coordinar los detalles. "
-        "Quedate atento por aquí."
+        f"{saludo} Registramos tu solicitud y se la pasamos a nuestro manager 🎶\n\n"
+        "Te van a responder por este mismo chat para coordinar los detalles. "
+        "Quédate atento por aquí."
     )

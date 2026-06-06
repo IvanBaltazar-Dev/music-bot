@@ -18,7 +18,7 @@ from app.services import text_utils
 
 # Frase genérica cuando no se reconoce la localidad (contratación).
 GENERIC_CONTRATACION = (
-    "¡Qué bonito destino! Por ahí se puede armar una celebración con bastante cariño 🙌🎶"
+    "Perfecto, podemos coordinar una buena celebración por allá 🎶"
 )
 
 

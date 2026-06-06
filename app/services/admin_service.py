@@ -498,7 +498,8 @@ async def _activate_control(admin_number: str, code: str, sol: dict) -> str | No
     # Mensaje para el cliente: corto, alegre y sin revelar lo interno.
     await send_text_message(
         client,
-        "¡Listo, estamos leyendo tu solicitud! 🙌🎶 Ahora te escribe el manager por aquí mismo.",
+        "Listo, ya estamos viendo tu solicitud. En un momento te escribe el "
+        "manager por aquí mismo.",
     )
     return client
 

@@ -386,21 +386,19 @@ def _ask_missing_step1(missing: list[str]):
     if "fecha_evento" in missing:
         if "localidad" in missing:
             return _resp(
-                "Mi calendario se puso a bailar huayno y no entendió la fecha 😅\n\n"
-                "¿Me la pasas más clarita junto con la ciudad? Por ejemplo:\n"
+                "No me quedó clara la fecha. ¿Me la indicas junto con la ciudad? "
+                "Por ejemplo:\n"
                 "• 15/10 en Huancayo\n"
                 "• quincena de octubre en Jauja\n"
                 "• Día de la Madre en Lima"
             )
         return _resp(
-            "Mi calendario se mareó un poquito 😅 No entendí bien la fecha.\n\n"
-            "¿Me la escribes así, porfa? Puede ser: 15/10, quincena de octubre, "
-            "fin de mes o Día del Padre."
+            "No entendí bien la fecha. ¿Me la escribes de nuevo? Puede ser: 15/10, "
+            "quincena de octubre, fin de mes o Día del Padre."
         )
 
     return _resp(
-        "¡Vamos bien! 🙌 Ya tengo la fecha, pero me falta la ciudad o localidad.\n"
-        "¿Dónde sería el evento?"
+        "Ya tengo la fecha. Me falta la ciudad o localidad: ¿dónde sería el evento?"
     )
 
 
@@ -415,34 +413,33 @@ def _ask_missing_step2(session: Session, missing: list[str], answer: str):
             if not missing:
                 return _ask_hire_step3(session)
             return _resp(
-                "Perdón, ahí mi radar festivo se quedó mirando al techo 😅\n\n"
-                "Lo registraré como fiesta costumbrista. Solo me falta la hora aproximada."
+                "Lo registro como fiesta costumbrista. Solo me falta la hora aproximada."
             )
 
         if attempts >= 2:
             return _resp(
-                "Perdón, ahí sí no logré entender qué tipo de evento es 😅\n\n"
-                "¿Me lo escribes más directo? Por ejemplo: fiesta patronal, Tunantada, "
-                "yunza, mitin político, aniversario de pueblo o evento privado."
+                "No logré entender qué tipo de evento es. ¿Me lo escribes más "
+                "directo? Por ejemplo: fiesta patronal, Tunantada, yunza, mitin "
+                "político, aniversario de pueblo o evento privado."
             )
 
         if "horario_evento" in missing:
             return _resp(
-                "Tengo la fecha y el lugar, pero mi detector de fiestas hizo pasitos prohibidos 😅\n\n"
-                "¿Qué tipo de evento será y a qué hora aproximada? Puede ser: Tunantada, "
-                "Huaconada, yunza, fiesta patronal, mitin político, aniversario de pueblo, "
-                "Virgen de Cocharcas o Patrón Santiago."
+                "Tengo la fecha y el lugar. ¿Qué tipo de evento será y a qué hora "
+                "aproximada? Por ejemplo: Tunantada, Huaconada, yunza, fiesta "
+                "patronal, mitin político, aniversario de pueblo, Virgen de "
+                "Cocharcas o Patrón Santiago."
             )
 
         return _resp(
-            "La hora ya la tengo 🙌 Pero no entendí bien el tipo de evento.\n\n"
-            "¿Me lo escribes como fiesta patronal, Tunantada, yunza, mitin político, "
+            "Ya tengo la hora, pero no entendí bien el tipo de evento. ¿Me lo "
+            "escribes como fiesta patronal, Tunantada, yunza, mitin político, "
             "aniversario de pueblo o evento privado?"
         )
 
     return _resp(
-        "Ya tengo el tipo de evento 🙌 Ahora solo me falta la hora aproximada.\n"
-        "¿A qué hora sería?"
+        "Ya tengo el tipo de evento. Ahora me falta la hora aproximada: "
+        "¿a qué hora sería?"
     )
 
 
@@ -507,7 +504,7 @@ def _ask_hire_step2(session: Session):
     _touch(session, STATE_HIRE_STEP2)
     return _resp(
         f"{frase}\n\n"
-        "Perfecto. Ahora cuéntame:\n"
+        "Ahora cuéntame:\n"
         "• Tipo de evento (cumpleaños, boda, aniversario…)\n"
         "• Hora aproximada"
     )
@@ -516,12 +513,11 @@ def _ask_hire_step2(session: Session):
 def _ask_hire_step3(session: Session):
     _touch(session, STATE_HIRE_STEP3)
     return _resp(
-        "¡Listo! ¿A nombre de quién dejamos la solicitud? Puedes pasarme tu "
-        "nombre completo o DNI.\n\n"
-        "Si solo quieres cotizar por ahora o prefieres no dejar nombre, dímelo "
-        "y lo pasamos al manager con tu WhatsApp.\n\n"
-        "Te responderán por este mismo chat. Si prefieres una llamada, puedes "
-        "indicar a qué hora se te acomoda mejor."
+        "¿A nombre de quién dejamos la solicitud? Puedes pasarme tu nombre "
+        "completo o tu DNI.\n\n"
+        "Si por ahora solo quieres cotizar o prefieres no dejar nombre, dímelo y "
+        "lo pasamos al manager con tu WhatsApp. Te van a responder por este "
+        "mismo chat; si prefieres una llamada, indícanos a qué hora te acomoda."
     )
 
 
@@ -530,8 +526,8 @@ def start_hire(number: str):
     session.data = {"numero_cliente": number, "ultimo_mensaje_cliente": ""}
     _touch(session, STATE_HIRE_STEP1)
     return _resp(
-        "Qué bonito que pienses en nosotros para acompañarte en una fecha tan especial 🎶💛\n\n"
-        "Confirmame estos datos:\n"
+        "Gracias por pensar en nosotros para tu evento 🎶\n\n"
+        "Para empezar, indícame:\n"
         "• Fecha del evento\n"
         "• Ciudad o localidad"
     )
@@ -601,15 +597,15 @@ def _advance_hire(session: Session, answer: str):
         return _ask_hire_confirm(session, corregido=True)
 
     clear_session(session.whatsapp)
-    return _resp("Reinicié la conversación 😊 Escribe “hola” cuando quieras.")
+    return _resp("Reinicié la conversación. Escribe “hola” cuando quieras.")
 
 
 def _ask_hire_confirm(session: Session, corregido: bool = False):
     """Resumen final para que el cliente confirme antes de enviar la solicitud."""
     d = session.data
     _touch(session, STATE_HIRE_CONFIRM)
-    cab = ("¡Actualizado! 🙌 ¿Así está bien?" if corregido
-           else "¡Ya casi! 🙌 Revisa que esté todo bien:")
+    cab = ("Actualizado. ¿Así está bien?" if corregido
+           else "Antes de enviarla, revisa que esté todo bien:")
     lineas = [
         cab, "",
         f"📅 Fecha: {d.get('fecha_evento') or '—'}",
@@ -618,7 +614,7 @@ def _ask_hire_confirm(session: Session, corregido: bool = False):
         f"🕒 Hora: {d.get('horario_evento') or '—'}",
         f"👤 A nombre de: {d.get('nombre_o_dni') or '—'}",
         "",
-        "Responde *sí* para enviarla, o dime qué corrijo (ej: \"la hora es 8 pm\").",
+        "Responde *sí* para enviarla, o dime qué corrijo (por ejemplo: \"la hora es 8 pm\").",
     ]
     return _resp("\n".join(lineas))
 

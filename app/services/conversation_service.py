@@ -144,17 +144,13 @@ async def _send_greeting(to: str, profile_name: str = ""):
     nombre = (profile_name or "").strip()
     if nombre:
         texto = (
-            f"¡Hola, {nombre}! 🙌🎶\n"
-            "Qué alegría tenerte por aquí.\n\n"
-            f"Te damos la bienvenida al WhatsApp oficial de {group_name()}.\n\n"
-            "Cuéntame, ¿qué te gustaría hacer hoy?"
+            f"¡Hola, {nombre}! Bienvenido al WhatsApp oficial de {group_name()} 🎶\n\n"
+            "¿En qué te puedo ayudar hoy?"
         )
     else:
         texto = (
-            "¡Hola! 🙌🎶\n"
-            "Qué alegría tenerte por aquí.\n\n"
-            f"Soy el asistente oficial de {group_name()}.\n\n"
-            "Cuéntame, ¿qué te gustaría hacer hoy?"
+            f"¡Hola! Soy el asistente de {group_name()}.\n\n"
+            "¿En qué te puedo ayudar hoy?"
         )
     await _send_buttons(to, texto, _main_menu_buttons(), flujo="bienvenida")
 
@@ -167,9 +163,8 @@ async def _start_see_events(to: str):
     session_service.start_see(to)
     await _send_buttons(
         to,
-        "¡Qué alegría leerte! 🙌🎶\n"
-        "Queremos disfrutar contigo en nuestra próxima presentación.\n\n"
-        "Cuéntanos, ¿desde dónde nos escribes?",
+        "Nos encantaría verte en una próxima presentación 🎶\n\n"
+        "¿Desde qué ciudad nos escribes?",
         [
             {"id": intent_service.BTN_CITY_HUANCAYO, "title": "Huancayo"},
             {"id": intent_service.BTN_CITY_LIMA, "title": "Lima"},
@@ -185,11 +180,11 @@ async def _process_see_city(to: str, city_text: str):
     frase = locality_service.obtener_frase_eventos(loc)
 
     if frase:
-        intro = f"{frase}\n\nDame un ratito, voy a despertar al planificador de eventos y reviso la agenda. 😄"
+        intro = f"{frase}\n\nDame un momento, reviso la agenda."
     else:
         intro = (
-            f"¡Qué alegría que nos escribas desde {city_name}! 🙌🎶\n\n"
-            "Dame un ratito, voy a despertar al planificador de eventos y reviso la agenda. 😄"
+            f"Qué bueno que nos escribas desde {city_name}.\n\n"
+            "Dame un momento, reviso la agenda."
         )
     await _send_text(to, intro, flujo="ver_eventos")
 
@@ -216,7 +211,7 @@ async def _process_see_city(to: str, city_text: str):
             })
         await _send_menu(
             to,
-            f"¡Tenemos varias fechas por {city_name}! 🎶🙌\n\nElige la que te interese:",
+            f"Tenemos varias fechas por {city_name} 🎶\n\nElige la que te interese:",
             options,
             button_text="Ver fechas",
             flujo="ver_eventos",
@@ -229,9 +224,9 @@ async def _process_see_city(to: str, city_text: str):
         session_service.set_state(to, STATE_SEE_INTEREST)
         await _send_buttons(
             to,
-            f"Por ahora no tenemos una fecha confirmada en {city_name} 🙌\n\n"
-            "Pero nos encantaría saber si te gustaría que visitemos tu localidad.\n\n"
-            "¿Quieres dejarnos tu interés para tenerlo en cuenta?",
+            f"Por ahora no tenemos una fecha confirmada en {city_name}.\n\n"
+            "¿Te gustaría que dejemos registrado tu interés para avisarte si "
+            "vamos por allá?",
             [
                 {"id": intent_service.BTN_INTEREST_YES, "title": "Sí, me gustaría"},
                 {"id": intent_service.BTN_OTHER_CITY, "title": "Otra ciudad"},
@@ -249,8 +244,8 @@ async def _save_interest(to: str, profile_name: str = ""):
     session_service.set_state(to, STATE_IDLE)
     await _send_text(
         to,
-        f"¡Listo! Tomamos nota de tu interés por {city or 'tu localidad'} 🙌🎶\n\n"
-        "Apenas tengamos algo por ahí, te avisamos por aquí. ¡Gracias por el cariño!",
+        f"Listo, registramos tu interés por {city or 'tu localidad'}. "
+        "Apenas tengamos una fecha por allá, te avisamos por aquí. ¡Gracias!",
         flujo="ver_eventos",
     )
 
@@ -266,10 +261,10 @@ async def _handle_see_input(to: str, text: str, profile_name: str = ""):
             await _save_interest(to, profile_name)
         elif any(w in norm for w in ("otra", "consultar", "otro")):
             session_service.set_state(to, STATE_SEE_CITY)
-            await _send_text(to, "¡De una! ¿Desde qué ciudad nos escribes? 🙌", flujo="ver_eventos")
+            await _send_text(to, "Claro, ¿desde qué ciudad nos escribes?", flujo="ver_eventos")
         elif any(w in norm for w in ("no", "luego", "despues", "ahora no")):
             session_service.set_state(to, STATE_IDLE)
-            await _send_text(to, "¡Sin problema! Aquí estaremos cuando quieras 🙌🎶", flujo="ver_eventos")
+            await _send_text(to, "Sin problema, aquí estaremos cuando quieras.", flujo="ver_eventos")
         else:
             # Probablemente escribió otra ciudad directamente
             await _process_see_city(to, text)
@@ -307,8 +302,8 @@ async def _pick_city_event(to: str, index_str: str):
     else:
         await _send_text(
             to,
-            "Esa opción ya no está disponible 🙈 Cuéntame otra vez desde qué "
-            "ciudad nos escribes y reviso la agenda 🙌",
+            "Esa opción ya no está disponible. Dime otra vez desde qué ciudad nos "
+            "escribes y reviso la agenda.",
             flujo="ver_eventos",
         )
 
@@ -316,7 +311,7 @@ async def _pick_city_event(to: str, index_str: str):
 async def _event_action(to: str, action: str):
     e = session_service.get_session(to).data.get("last_event")
     if not e:
-        await _send_text(to, "Cuéntame de nuevo desde qué ciudad nos escribes y reviso la agenda 🙌")
+        await _send_text(to, "Dime de nuevo desde qué ciudad nos escribes y reviso la agenda.")
         return
 
     if action == "maps":
@@ -324,25 +319,25 @@ async def _event_action(to: str, action: str):
         metrics_service.log(to, metrics_service.CONSULTA_UBICACION, flujo="ver_eventos",
                             id_evento=str(e.get("id") or e.get("id_evento") or ""))
         if url:
-            await _send_text(to, f"¡Te llevo de la mano! 🗺️\n\n{url}", flujo="ver_eventos")
+            await _send_text(to, f"Aquí tienes la ubicación 🗺️\n{url}", flujo="ver_eventos")
         else:
-            await _send_text(to, "Apenas tengamos el mapa listo te lo paso por aquí 🙌", flujo="ver_eventos")
+            await _send_text(to, "Apenas tengamos el mapa listo te lo comparto por aquí.", flujo="ver_eventos")
     elif action == "tickets":
         metrics_service.log(to, metrics_service.CONSULTA_ENTRADAS, flujo="ver_eventos",
                             id_evento=str(e.get("id") or e.get("id_evento") or ""))
         precio = event_service.precio_entrada(e)
         link = event_service.link_evento(e)
         if precio:
-            partes = ["🎟️ ¡Vamos con las entradas! 🎶\n", f"💵 {precio}"]
+            partes = [f"Entradas: {precio}"]
             if link:
-                partes.append(f"\n👉 {link}")
+                partes.append(link)
             await _send_text(to, "\n".join(partes), flujo="ver_eventos")
         else:
             # Sin precio cargado: avisamos a un asesor para que lo contacte.
             await _send_text(
                 to,
-                "🎟️ ¡Claro! Para darte el detalle exacto de las entradas, "
-                "un asesor te va a escribir por aquí en un ratito 🙌",
+                "Para darte el detalle de las entradas, un asesor te escribe por "
+                "aquí en un momento.",
                 flujo="ver_eventos",
             )
             try:
@@ -352,14 +347,14 @@ async def _event_action(to: str, action: str):
     elif action == "share":
         link = event_service.link_evento(e)
         base = (
-            "¡Pasa la voz y vente con tu gente! 🎶🙌\n\n"
+            "Compártelo con tu gente y vengan juntos 🎶\n\n"
             f"📅 {e.get('fecha') or e.get('fecha_evento', '')}\n"
             f"📍 {e.get('lugar', '')} — {e.get('ciudad', '')}"
         )
         if link:
-            base += f"\n\nComparte este link con tus amigos:\n{link}"
+            base += f"\n\nEnlace para compartir:\n{link}"
         else:
-            base += "\n\n¡Cuéntales a todos! Apenas tengamos el link de la publicación te lo paso por aquí."
+            base += "\n\nApenas tengamos el enlace de la publicación te lo comparto por aquí."
         await _send_text(to, base, flujo="ver_eventos")
 
 
@@ -378,10 +373,9 @@ async def _start_know_group(to: str):
     opciones.append({"id": intent_service.FLOW_HIRE, "title": "Quiero contratarlos"})
 
     intro = (
-        "¡Claro que sí! 🙌🎶\n\n"
-        "Somos una agrupación nacida con harto cariño por la música y por la "
-        "gente que disfruta celebrar bonito.\n\n"
-        "Te cuento un poquito o, si prefieres, te paso directo lo que quieras ver:"
+        "Somos una agrupación que vive la música y disfruta acompañar a la gente "
+        "en sus celebraciones 🎶\n\n"
+        "¿Qué te gustaría ver?"
     )
     await _send_menu(to, intro, opciones, button_text="Conocer más", flujo="conoce")
 
@@ -394,19 +388,19 @@ async def _know_group_action(to: str, button_id: str):
         if group_info_service.has_videos():
             await _send_text(to, group_info_service.videos_text(), flujo="conoce")
         else:
-            await _send_text(to, "Muy pronto subiremos videos por aquí 🙌🎶", flujo="conoce")
+            await _send_text(to, "Pronto subiremos videos por aquí.", flujo="conoce")
     elif button_id == intent_service.BTN_MUSIC:
         metrics_service.log(to, metrics_service.ESCUCHAR_MUSICA, flujo="conoce")
         if group_info_service.has_music():
             await _send_text(to, group_info_service.music_text(), flujo="conoce")
         else:
-            await _send_text(to, "Pronto compartiremos nuestra música por aquí 🎶", flujo="conoce")
+            await _send_text(to, "Pronto compartiremos nuestra música por aquí.", flujo="conoce")
     elif button_id == intent_service.BTN_SOCIAL:
         metrics_service.log(to, metrics_service.REDES_SOCIALES, flujo="conoce")
         if group_info_service.has_redes():
             await _send_text(to, group_info_service.redes_text(), flujo="conoce")
         else:
-            await _send_text(to, "Estamos preparando nuestras redes, ¡muy pronto! 🙌", flujo="conoce")
+            await _send_text(to, "Estamos preparando nuestras redes, muy pronto.", flujo="conoce")
 
 
 # ---------------------------------------------------------------------------
@@ -428,8 +422,8 @@ async def _finalize_flow(to: str, resp: dict):
             refreshed = hiring_repo.get_by_code(code) or existing
             await _send_text(
                 to,
-                "Ya tenemos una solicitud abierta con tus datos 🙌\n\n"
-                "Acabo de agregar tu último mensaje para que el manager lo revise.",
+                "Ya tienes una solicitud abierta con tus datos. Sumé tu último "
+                "mensaje para que el manager lo revise.",
                 flujo="contratar",
             )
             await admin_service.notify_request_update(
@@ -741,7 +735,7 @@ async def _dispatch_client_button(to: str, button_id: str, profile_name: str) ->
         return True
     if button_id == intent_service.BTN_CITY_OTHER:
         session_service.set_state(to, STATE_SEE_CITY)
-        await _send_text(to, "¡De una! Cuéntame, ¿desde qué ciudad nos escribes? 🙌", flujo="ver_eventos")
+        await _send_text(to, "Claro, ¿desde qué ciudad nos escribes?", flujo="ver_eventos")
         return True
 
     if button_id.startswith(intent_service.PREFIX_CLIENT_EVENT_PICK):
@@ -763,11 +757,11 @@ async def _dispatch_client_button(to: str, button_id: str, profile_name: str) ->
         return True
     if button_id == intent_service.BTN_OTHER_CITY:
         session_service.set_state(to, STATE_SEE_CITY)
-        await _send_text(to, "¡De una! ¿Desde qué ciudad nos escribes? 🙌", flujo="ver_eventos")
+        await _send_text(to, "Claro, ¿desde qué ciudad nos escribes?", flujo="ver_eventos")
         return True
     if button_id == intent_service.BTN_NOT_NOW:
         session_service.set_state(to, STATE_IDLE)
-        await _send_text(to, "¡Sin problema! Aquí estaremos cuando quieras 🙌🎶")
+        await _send_text(to, "Sin problema, aquí estaremos cuando quieras.")
         return True
 
     if button_id in (intent_service.BTN_WHO, intent_service.BTN_VIDEOS,
@@ -852,9 +846,8 @@ async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = 
         session_service.set_state(to, STATE_IDLE)
         await _send_text(
             to,
-            "¡A la orden! 🙌😄 Me quedo por aquí atento como radio prendida 📻🎶\n\n"
-            "Cuando quieras ver presentaciones, contratarnos o lo que sea, me "
-            "escribes y aparezco al toque. ¡Que te vaya bonito! ✨",
+            "Con gusto. Cuando quieras ver presentaciones, contratarnos o "
+            "cualquier consulta, escríbeme por aquí. ¡Que te vaya muy bien! 🎶",
             flujo="cierre",
         )
     elif intent == intent_service.INTENT_CONTACT:
@@ -864,17 +857,15 @@ async def _dispatch_intent(to: str, intent: str, profile_name: str, text: str = 
         metrics_service.log(to, "FUERA_DE_TEMA", mensaje=text)
         await _send_buttons(
             to,
-            "Por aquí te ayudo con todo lo de la agrupación 🎶 "
-            "(ver presentaciones, contratarnos o conocernos).\n\n"
-            "¿Qué te gustaría hacer?",
+            "Por aquí te ayudo con todo lo de la agrupación: ver presentaciones, "
+            "contratarnos o conocernos. ¿Qué te gustaría hacer?",
             _main_menu_buttons(),
         )
     else:  # UNKNOWN -> nunca inventamos respuesta; ofrecemos el menú.
         metrics_service.log(to, metrics_service.UNKNOWN, mensaje=text)
         await _send_buttons(
             to,
-            "Gracias por tu mensaje 🙌 Para ayudarte mejor, cuéntame qué te "
-            "gustaría hacer hoy:",
+            "Para ayudarte mejor, dime qué te gustaría hacer:",
             _main_menu_buttons(),
         )
 
@@ -885,8 +876,8 @@ async def _handle_contact(to: str, profile_name: str, text: str):
     metrics_service.log(to, "CONTACTO", flujo="contacto", mensaje=text)
     await _send_buttons(
         to,
-        "¡Claro! Por aquí mismo te atendemos 🙌 En breve un asesor puede "
-        "escribirte por este chat.\n\nMientras tanto, ¿te ayudo con algo de esto?",
+        "Claro, te atendemos por aquí mismo. En breve un asesor puede escribirte "
+        "por este chat. Mientras tanto, ¿te ayudo con algo de esto?",
         _main_menu_buttons(),
         flujo="contacto",
     )

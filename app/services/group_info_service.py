@@ -11,11 +11,10 @@ from app.repositories import content_repository as content
 
 # Texto por defecto de "¿Quiénes son?" si no hay descripción en la hoja.
 _DEFAULT_QUIENES_SON = (
-    "Somos una agrupación que lleva música, alegría y sentimiento a cada "
-    "presentación 🎶\n\n"
-    "Nos gusta que cada evento se sienta cercano, animado y con ese toque especial "
-    "que hace que la gente cante, baile y se quede con un bonito recuerdo.\n\n"
-    "¿Quieres ver un video o prefieres escuchar un poquito de nuestra música?"
+    "Somos una agrupación que lleva música y alegría a cada presentación 🎶\n\n"
+    "Nos gusta que cada evento se sienta cercano y animado, para que la gente "
+    "cante, baile y se lleve un buen recuerdo.\n\n"
+    "¿Quieres ver un video o escuchar nuestra música?"
 )
 
 _RED_LABEL = {
@@ -56,26 +55,23 @@ def _format_links(rows: list[dict]) -> str:
 
 def videos_text() -> str:
     cabecera = (
-        "¡De una! Los videos hablan mejor que mil palabras 🎶😄\n\n"
-        "Te dejo algunos para que veas el ambiente, la música y cómo se viven "
-        "las presentaciones:\n\n"
+        "Aquí tienes algunos videos para que veas el ambiente de nuestras "
+        "presentaciones:\n\n"
     )
     return cabecera + _format_links(content.by_type(content.VIDEO))
 
 
 def music_text() -> str:
     cabecera = (
-        "¡Claro! Para conocer a una agrupación, primero hay que escucharla 🎶🙌\n\n"
-        "Te dejo por aquí algunas canciones o presentaciones:\n\n"
+        "Te comparto nuestra música para que nos escuches:\n\n"
     )
     return cabecera + _format_links(content.by_type(content.CANCION))
 
 
 def redes_text() -> str:
     cabecera = (
-        "¡Sí, claro! Por ahí también puedes ver novedades, videos y próximas "
-        "presentaciones 🙌🎶\n\n"
-        "Te dejo nuestras redes:\n\n"
+        "En nuestras redes encuentras novedades, videos y próximas "
+        "presentaciones:\n\n"
     )
     bloques = []
     for r in content.get_redes():

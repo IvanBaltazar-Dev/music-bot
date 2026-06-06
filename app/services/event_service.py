@@ -96,12 +96,12 @@ def build_events_response() -> str:
 
     if not events:
         return (
-            "Por ahora no tengo eventos activos registrados, "
-            "pero apenas tengamos una fecha confirmada la compartiremos por aquí 🎶"
+            "Por ahora no tenemos eventos confirmados. Apenas tengamos una fecha, "
+            "la compartimos por aquí 🎶"
         )
 
     lines = [
-        "Estos son los próximos eventos confirmados de Carlos Fer y Agrup. Cariño Lindo 🎶🙌"
+        "Estos son nuestros próximos eventos confirmados 🎶"
     ]
 
     for event in events[:5]:
@@ -130,7 +130,7 @@ def format_event_block(e: dict) -> str:
     lugar = str(e.get("lugar", "")).strip()
     ciudad = str(e.get("ciudad", "")).strip()
 
-    lineas = ["¡Sí tenemos fecha! 🎶🙌", ""]
+    lineas = ["Sí, tenemos fecha confirmada 🎶", ""]
     if fecha:
         lineas.append(f"📅 {fecha}")
     lugar_ciudad = " — ".join([p for p in [lugar, ciudad] if p])
@@ -141,7 +141,6 @@ def format_event_block(e: dict) -> str:
     desc = _event_description(e)
     if desc:
         lineas.append(f"\n{desc}")
-    lineas.append("\nVa a estar bonito para cantar, bailar y disfrutar juntos. 😄")
     lineas.append("\n¿Qué te gustaría hacer?")
     return "\n".join(lineas)
 
