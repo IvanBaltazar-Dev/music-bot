@@ -115,7 +115,7 @@ def test_to_conversation_populates_last_interaction(monkeypatch):
 def test_to_conversation_passes_profile_name_to_client(monkeypatch):
     captured = {}
 
-    def fake_ensure_client(phone, name="", profile_name=""):
+    def fake_ensure_client(phone, name="", profile_name="", touch=False):
         captured["profile_name"] = profile_name
         return {"id": "c1"}
 
@@ -138,3 +138,72 @@ def test_from_hiring_exposes_transition_marks():
     assert sheet["fecha_cierre"] == "2026-06-06T10:00:00+00:00"
     assert sheet["fecha_cotizacion"] == ""
     assert sheet["fecha_descarte"] == ""
+
+
+# --- metrics.event_id -------------------------------------------------------
+def test_to_metric_resolves_event_id(monkeypatch):
+    monkeypatch.setattr(store, "_ensure_client", lambda *a, **k: {"id": "c1"})
+    monkeypatch.setattr(store, "_request_by_code", lambda *a, **k: None)
+    monkeypatch.setattr(store, "_event_by_ref", lambda ref: {"id": "ev-uuid"} if ref else None)
+    payload = store._to_metric({"numero_usuario": "51999888777", "id_evento": "EVT-ABC123"})
+    assert payload["event_id"] == "ev-uuid"
+
+
+def test_to_metric_event_id_none_when_absent(monkeypatch):
+    monkeypatch.setattr(store, "_ensure_client", lambda *a, **k: {"id": "c1"})
+    monkeypatch.setattr(store, "_request_by_code", lambda *a, **k: None)
+    monkeypatch.setattr(store, "_event_by_ref", lambda ref: None)
+    payload = store._to_metric({"numero_usuario": "51999888777"})
+    assert payload["event_id"] is None
+
+
+# --- follow_ups.ended_at ----------------------------------------------------
+def test_to_follow_seals_ended_at_on_finalizado(monkeypatch):
+    monkeypatch.setattr(store, "_ensure_client", lambda *a, **k: {"id": "c1"})
+    monkeypatch.setattr(store, "_request_by_code", lambda *a, **k: None)
+    monkeypatch.setattr(store, "_admin_by_phone", lambda *a, **k: None)
+    activo = store._to_follow({"numero_cliente": "51999888777", "estado": "ACTIVO"})
+    assert activo["ended_at"] is None
+    fin = store._to_follow({"numero_cliente": "51999888777", "estado": "FINALIZADO"})
+    assert fin["ended_at"] is not None
+    # Preserva una marca previa.
+    prev = store._to_follow({
+        "numero_cliente": "51999888777", "estado": "FINALIZADO",
+        "fecha_fin": "2026-06-06T10:00:00+00:00",
+    })
+    assert prev["ended_at"] == "2026-06-06T10:00:00+00:00"
+
+
+# --- Guarda de teléfono (CHECK de la BD) ------------------------------------
+def test_valid_phone_guard():
+    assert store._valid_phone("51999888777") is True
+    assert store._valid_phone("123") is False   # muy corto
+    assert store._valid_phone("") is False
+    assert store._valid_phone("51-999") is False  # ya viene sin dígitos? no aplica
+
+
+def test_ensure_client_skips_invalid_phone(monkeypatch):
+    # No debe intentar insertar un cliente con teléfono inválido.
+    calls = {"select": 0, "insert": 0}
+    monkeypatch.setattr(store, "_select_one", lambda *a, **k: (calls.__setitem__("select", calls["select"] + 1), None)[1])
+    monkeypatch.setattr(store, "_insert", lambda *a, **k: (calls.__setitem__("insert", calls["insert"] + 1), {"id": "x"})[1])
+    result = store._ensure_client("123")  # inválido
+    assert result == {}
+    assert calls["insert"] == 0
+
+
+# --- numeric(12,2) bound ----------------------------------------------------
+def test_numeric_12_2_bounds_and_rounding():
+    assert store._numeric_12_2("1500.50") == 1500.50
+    assert store._numeric_12_2("1500.999") == 1501.0   # redondeo a 2 decimales
+    assert store._numeric_12_2("") is None
+    assert store._numeric_12_2("abc") is None
+    assert store._numeric_12_2("-5") is None
+    assert store._numeric_12_2("99999999999") is None  # >10 dígitos enteros
+
+
+# --- _to_iso_date hardening -------------------------------------------------
+def test_to_iso_date_rejects_pathological_serial():
+    assert store._to_iso_date("1e308") is None
+    assert store._to_iso_date("inf") is None
+    assert store._to_iso_date("nan") is None

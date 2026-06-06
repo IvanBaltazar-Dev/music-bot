@@ -58,6 +58,16 @@ def upsert(numero_usuario: str, updates: dict) -> None:
     }
     sheets_client.append_record(SHEET_CONVERSATIONS, record)
 
+    # `profile_name` no es columna del esquema, así que el INSERT lo descarta.
+    # Lo capturamos en el primer contacto con un update inmediato (la vía update
+    # sí reenvía claves extra a Supabase -> clients.profile_name).
+    profile_name = updates.get("profile_name", "")
+    if profile_name:
+        sheets_client.update_record(
+            SHEET_CONVERSATIONS, "numero_usuario", numero_usuario,
+            {"profile_name": profile_name, "fecha_ultima_interaccion": now},
+        )
+
 
 def set_state(numero_usuario: str, estado: str, admin_numero: str = "") -> None:
     updates = {"estado_conversacion": estado}

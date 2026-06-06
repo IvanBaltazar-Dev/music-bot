@@ -7,6 +7,7 @@ Google Sheets), pero persiste en las tablas CRM de Supabase.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -18,10 +19,34 @@ from app.repositories import sheets_schema
 
 # Estados terminales de una solicitud (cierran el vínculo activo con el hilo).
 _TERMINAL_STATUSES = {"CERRADA", "COTIZADA", "DESCARTADA"}
+# Estados de conversación en los que NO hay admin (hay que limpiar el vínculo).
+_NO_ADMIN_STATES = {"BOT_ACTIVO", "CERRADA"}
+# Patrón que exige el CHECK de la BD para columnas de teléfono.
+_PHONE_RE = re.compile(r"[0-9]{6,20}")
 
 
 def _only_digits(value: str) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _valid_phone(digits: str) -> bool:
+    """True si el número cumple el CHECK '^[0-9]{6,20}$' de la BD."""
+    return bool(_PHONE_RE.fullmatch(digits or ""))
+
+
+def _numeric_12_2(value) -> float | None:
+    """Normaliza un monto a numeric(12,2): None si está vacío, no es numérico,
+    es negativo o excede 10 dígitos enteros (lo que Postgres rechazaría)."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    if v < 0 or v >= 10 ** 10:
+        return None
+    return round(v, 2)
 
 
 def _now_iso() -> str:
@@ -43,9 +68,11 @@ def _to_iso_date(value) -> str | None:
             continue
     try:  # Serial de Google Sheets (días desde 1899-12-30).
         serial = float(s)
-        if serial > 0:
+        # Acotado a un rango de fechas razonable (~hasta el año 9999) para evitar
+        # OverflowError/OSError con valores patológicos (inf, nan, enormes).
+        if 0 < serial <= 2958465:
             return (datetime(1899, 12, 30) + timedelta(days=serial)).date().isoformat()
-    except ValueError:
+    except (ValueError, OverflowError, OSError):
         pass
     return None
 
@@ -140,12 +167,16 @@ def _patch(table: str, filters: dict, payload: dict) -> bool:
     return bool(rows)
 
 
-def _ensure_client(phone: str, name: str = "", profile_name: str = "") -> dict:
-    """Obtiene (o crea) el cliente. Cuando llega información nueva (nombre dado
-    en una solicitud o nombre de perfil de WhatsApp) refresca el registro y la
-    marca de última actividad. Sin datos nuevos no escribe (evita writes inútiles).
+def _ensure_client(phone: str, name: str = "", profile_name: str = "",
+                   touch: bool = False) -> dict:
+    """Obtiene (o crea) el cliente. Refresca nombre de perfil / nombre dado y,
+    si `touch`, la marca de última actividad. Si el teléfono no cumple el CHECK
+    de la BD, devuelve {} (saltar sin romper el INSERT completo de la fila padre).
     """
     digits = _only_digits(phone)
+    if not _valid_phone(digits):
+        print(f"[supabase] cliente omitido: telefono invalido (len={len(digits)})")
+        return {}
     found = _select_one("clients", params={"phone": f"eq.{digits}"})
     if found:
         patch: dict = {}
@@ -154,7 +185,7 @@ def _ensure_client(phone: str, name: str = "", profile_name: str = "") -> dict:
             patch["display_name"] = name
         if profile_name and str(found.get("profile_name") or "") != profile_name:
             patch["profile_name"] = profile_name
-        if patch:
+        if touch or patch:
             patch["last_seen_at"] = _now_iso()
             if found.get("id"):
                 _patch("clients", {"id": found["id"]}, patch)
@@ -165,6 +196,21 @@ def _ensure_client(phone: str, name: str = "", profile_name: str = "") -> dict:
         "display_name": name or None,
         "profile_name": profile_name or None,
     }) or {"phone": digits}
+
+
+def _event_by_ref(ref: str) -> dict | None:
+    """Resuelve un evento por su legacy_id (EVT-xxxx) o por su UUID real.
+    Los llamadores pasan str(e.get('id') or e.get('id_evento')), que puede ser
+    cualquiera de los dos según cómo se haya leído el evento."""
+    ref = str(ref or "").strip()
+    if not ref:
+        return None
+    found = _select_one("events", params={"legacy_id": f"eq.{quote(ref, safe='')}"})
+    if found:
+        return found
+    if ref.count("-") == 4:  # parece un UUID
+        return _select_one("events", params={"id": f"eq.{quote(ref, safe='')}"})
+    return None
 
 
 def _ensure_thread(phone: str, client_id: str | None = None) -> dict | None:
@@ -251,7 +297,7 @@ def _from_conversation(r: dict) -> dict:
 
 def _to_conversation(r: dict) -> dict:
     phone = _only_digits(r.get("numero_usuario", ""))
-    client = _ensure_client(phone, profile_name=r.get("profile_name", ""))
+    client = _ensure_client(phone, profile_name=r.get("profile_name", ""), touch=True)
     admin_phone = _only_digits(r.get("admin_numero", ""))
     admin = _admin_by_phone(admin_phone) if admin_phone else None
     payload = {
@@ -316,7 +362,6 @@ def _to_hiring(r: dict) -> dict:
     admin_phone = _only_digits(r.get("admin_asignado", ""))
     admin = _admin_by_phone(admin_phone) if admin_phone else None
     status = r.get("estado") or "ABIERTA"
-    quote_amount = str(r.get("monto_cotizado", "") or "").strip()
     payload = {
         "code": r.get("codigo_solicitud") or None,
         "client_id": client.get("id"),
@@ -341,7 +386,7 @@ def _to_hiring(r: dict) -> dict:
         "quoted_at": _transition_timestamp(r.get("fecha_cotizacion", ""), status, "COTIZADA"),
         "closed_at": _transition_timestamp(r.get("fecha_cierre", ""), status, "CERRADA"),
         "discarded_at": _transition_timestamp(r.get("fecha_descarte", ""), status, "DESCARTADA"),
-        "quote_amount": float(quote_amount) if quote_amount.replace(".", "", 1).isdigit() else None,
+        "quote_amount": _numeric_12_2(r.get("monto_cotizado", "")),
         "quote_currency": r.get("moneda_cotizacion") or None,
     }
     return payload
@@ -469,6 +514,7 @@ def _from_follow(r: dict) -> dict:
         "numero_cliente": r.get("client_phone", "") or "",
         "fecha_inicio": r.get("started_at", "") or "",
         "estado": r.get("status", "") or "",
+        "fecha_fin": r.get("ended_at", "") or "",
     }
 
 
@@ -478,6 +524,7 @@ def _to_follow(r: dict) -> dict:
     admin = _admin_by_phone(admin_phone) if admin_phone else None
     phone = _only_digits(r.get("numero_cliente", ""))
     client = _ensure_client(phone)
+    status = r.get("estado") or "ACTIVO"
     return {
         "legacy_id": r.get("id_seguimiento") or None,
         "request_id": (req or {}).get("id"),
@@ -485,7 +532,9 @@ def _to_follow(r: dict) -> dict:
         "admin_phone": admin_phone or None,
         "client_id": client.get("id"),
         "client_phone": phone,
-        "status": r.get("estado") or "ACTIVO",
+        "status": status,
+        # Se sella al finalizar y se preserva en actualizaciones posteriores.
+        "ended_at": _transition_timestamp(r.get("fecha_fin", ""), status, "FINALIZADO"),
     }
 
 
@@ -510,10 +559,12 @@ def _to_metric(r: dict) -> dict:
     phone = _only_digits(r.get("numero_usuario", ""))
     client = _ensure_client(phone) if phone else {}
     req = _request_by_code(r.get("codigo_solicitud", ""))
+    event = _event_by_ref(r.get("id_evento", ""))
     return {
         "legacy_id": r.get("id_metrica") or None,
         "client_id": client.get("id"),
         "request_id": (req or {}).get("id"),
+        "event_id": (event or {}).get("id"),
         "phone": phone or None,
         "intent": r.get("intencion_detectada") or None,
         "flow": r.get("flujo") or None,
@@ -715,4 +766,13 @@ def update_record(sheet_name: str, key_col: str, key_val: str, updates: dict) ->
         _sync_thread_request_on_update(
             payload.get("thread_id"), payload.get("code"), payload.get("status")
         )
+    if result and table == "conversation_threads" and payload.get("state") in _NO_ADMIN_STATES:
+        # Al volver al bot / cerrar, NO queda admin. El filtro `if v is not None`
+        # de arriba descarta los None, así que limpiamos el vínculo explícitamente
+        # (si no, el hilo seguiría apuntando al admin anterior pese al estado).
+        try:
+            _patch(table, {db_col: quote(value, safe="")},
+                   {"current_admin_id": None, "current_admin_phone": None})
+        except Exception as exc:  # noqa: BLE001
+            print(f"[supabase] no se pudo limpiar admin del hilo: {exc.__class__.__name__}")
     return result
