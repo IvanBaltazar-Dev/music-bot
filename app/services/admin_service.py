@@ -388,6 +388,10 @@ async def notify_new_request(sol: dict) -> dict:
                     language=settings.ADMIN_NOTIFICATION_TEMPLATE_LANGUAGE,
                 )
                 ok = template_result is not None
+                if not ok:
+                    ok = await _send_admin(
+                        numero, texto, buttons=buttons, codigo=code
+                    )
             else:
                 ok = await _send_admin(
                     numero, texto, buttons=buttons, codigo=code
